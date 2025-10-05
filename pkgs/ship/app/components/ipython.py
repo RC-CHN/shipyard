@@ -1,17 +1,14 @@
 import asyncio
 from typing import Dict, Any, Optional
-from pathlib import Path
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from jupyter_client.manager import AsyncKernelManager
+from ..workspace import get_session_workspace
 
 router = APIRouter()
 
 # 全局内核管理器字典，以 session_id 为 key
 kernel_managers: Dict[str, AsyncKernelManager] = {}
-# 工作目录根路径
-WORKSPACE_ROOT = Path("workspace")
-WORKSPACE_ROOT.mkdir(exist_ok=True)
 
 
 class ExecuteCodeRequest(BaseModel):
@@ -33,13 +30,6 @@ class KernelInfo(BaseModel):
     kernel_id: str
     status: str
     connections: int
-
-
-def get_session_workspace(session_id: str) -> Path:
-    """获取 session 的工作目录"""
-    workspace_dir = WORKSPACE_ROOT / session_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    return workspace_dir
 
 
 async def get_or_create_kernel(session_id: str) -> AsyncKernelManager:

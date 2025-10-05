@@ -1,43 +1,11 @@
 import os
 import aiofiles
-from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
+from ..workspace import resolve_path
 
 router = APIRouter()
-
-# 工作目录根路径
-WORKSPACE_ROOT = Path("workspace")
-WORKSPACE_ROOT.mkdir(exist_ok=True)
-
-
-def get_session_workspace(session_id: str) -> Path:
-    """获取 session 的工作目录"""
-    workspace_dir = WORKSPACE_ROOT / session_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    return workspace_dir
-
-
-def resolve_path(session_id: str, path: str) -> Path:
-    """解析相对于 session 工作目录的路径"""
-    workspace_dir = get_session_workspace(session_id)
-
-    # 如果是绝对路径，检查是否在工作目录内
-    if os.path.isabs(path):
-        abs_path = Path(path)
-        # 确保路径在工作目录内
-        try:
-            abs_path.resolve().relative_to(workspace_dir.resolve())
-            return abs_path
-        except ValueError:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Access denied: path must be within workspace {workspace_dir}",
-            )
-    else:
-        # 相对路径，相对于工作目录
-        return workspace_dir / path
 
 
 # 定义请求和响应模型

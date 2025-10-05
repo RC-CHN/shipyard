@@ -5,22 +5,12 @@ from typing import Dict, Optional, Any
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from pathlib import Path
+from ..workspace import get_session_workspace
 
 router = APIRouter()
 
 # 存储正在运行的进程，按 session_id 分组
 running_processes: Dict[str, Dict[str, asyncio.subprocess.Process]] = {}
-
-# 工作目录根路径
-WORKSPACE_ROOT = Path("workspace")
-WORKSPACE_ROOT.mkdir(exist_ok=True)
-
-
-def get_session_workspace(session_id: str) -> Path:
-    """获取 session 的工作目录"""
-    workspace_dir = WORKSPACE_ROOT / session_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    return workspace_dir
 
 
 def get_session_processes(session_id: str) -> Dict[str, asyncio.subprocess.Process]:
