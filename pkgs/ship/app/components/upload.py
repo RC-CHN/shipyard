@@ -2,7 +2,7 @@ import aiofiles
 from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
-from ..workspace import resolve_path_safe
+from ..workspace import resolve_path
 
 router = APIRouter()
 
@@ -24,7 +24,7 @@ async def upload_file(
     """上传文件到session工作目录"""
     try:
         # 解析并验证目标路径
-        target_path = resolve_path_safe(x_session_id, file_path)
+        target_path = await resolve_path(x_session_id, file_path)
 
         # 确保父目录存在
         target_path.parent.mkdir(parents=True, exist_ok=True)

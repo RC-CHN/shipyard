@@ -1,37 +1,54 @@
 """
 Workspace management utilities for handling session-based file system operations.
 
-This module provides utilities for managing per-session workspaces, ensuring
-that each session has its own isolated file system environment while maintaining
-security by preventing access outside the designated workspace directories.
+This module provides utilities for managing per-session workspaces with user isolation,
+ensuring that each session has its own isolated file system environment and Linux user
+while maintaining security by preventing access outside the designated workspace directories.
 """
 
+import pwd
 from pathlib import Path
 from fastapi import HTTPException
-
-# 工作目录根路径
-WORKSPACE_ROOT = Path("workspace")
-WORKSPACE_ROOT.mkdir(exist_ok=True)
+from .components.user_manager import get_or_create_session_user
 
 
-def get_session_workspace(session_id: str) -> Path:
+def get_user_workspace_dir(username: str) -> Path:
     """
-    获取 session 的工作目录
+    获取用户的workspace目录路径
+
+    Args:
+        username: Linux用户名
+
+    Returns:
+        Path: 用户的workspace目录路径
+    """
+    try:
+        user_info = pwd.getpwnam(username)
+        user_home = Path(user_info.pw_dir)
+        workspace_dir = user_home / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        return workspace_dir
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"User {username} not found")
+
+
+async def get_session_workspace(session_id: str) -> Path:
+    """
+    获取session对应用户的工作目录
 
     Args:
         session_id: 会话ID
 
     Returns:
-        Path: session 的工作目录路径
+        Path: 用户的工作目录路径
     """
-    workspace_dir = WORKSPACE_ROOT / session_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    return workspace_dir
+    username = await get_or_create_session_user(session_id)
+    return get_user_workspace_dir(username)
 
 
-def resolve_path(session_id: str, path: str) -> Path:
+async def resolve_path(session_id: str, path: str) -> Path:
     """
-    安全的路径解析，适用于上传等需要额外安全检查的场景
+    安全的路径解析
 
     Args:
         session_id: 会话ID
@@ -43,7 +60,7 @@ def resolve_path(session_id: str, path: str) -> Path:
     Raises:
         HTTPException: 当路径在工作目录外时抛出403错误
     """
-    workspace_dir = get_session_workspace(session_id).resolve()
+    workspace_dir = (await get_session_workspace(session_id)).resolve()
     candidate = Path(path)
 
     if not candidate.is_absolute():
@@ -61,21 +78,33 @@ def resolve_path(session_id: str, path: str) -> Path:
     return candidate
 
 
-def get_workspace_root() -> Path:
+def resolve_user_path(username: str, path: str) -> Path:
     """
-    获取工作目录根路径
-
-    Returns:
-        Path: 工作目录根路径
-    """
-    return WORKSPACE_ROOT
-
-
-def ensure_workspace_exists(session_id: str) -> None:
-    """
-    确保指定 session 的工作目录存在
+    为指定用户安全地解析路径
 
     Args:
-        session_id: 会话ID
+        username: Linux用户名
+        path: 要解析的路径
+
+    Returns:
+        Path: 解析后的绝对路径
+
+    Raises:
+        HTTPException: 当路径在工作目录外时抛出403错误
     """
-    get_session_workspace(session_id)
+    workspace_dir = get_user_workspace_dir(username).resolve()
+    candidate = Path(path)
+
+    if not candidate.is_absolute():
+        candidate = workspace_dir / candidate
+
+    candidate = candidate.resolve()
+    try:
+        candidate.relative_to(workspace_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied: path must be within workspace {workspace_dir}",
+        )
+
+    return candidate

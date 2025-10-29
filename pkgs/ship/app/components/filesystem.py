@@ -72,7 +72,7 @@ async def create_file(
 ):
     """创建文件"""
     try:
-        file_path = resolve_path(x_session_id, request.path)
+        file_path = await resolve_path(x_session_id, request.path)
 
         # 确保父目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +99,7 @@ async def read_file(
 ):
     """读取文件内容"""
     try:
-        file_path = resolve_path(x_session_id, request.path)
+        file_path = await resolve_path(x_session_id, request.path)
 
         if not file_path.exists():
             raise HTTPException(
@@ -138,7 +138,7 @@ async def write_file(
 ):
     """写入文件内容"""
     try:
-        file_path = resolve_path(x_session_id, request.path)
+        file_path = await resolve_path(x_session_id, request.path)
 
         # 确保父目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,7 +166,7 @@ async def edit_file(
 ):
     """编辑文件内容 - 替换指定的字符串"""
     try:
-        file_path = resolve_path(x_session_id, request.path)
+        file_path = await resolve_path(x_session_id, request.path)
 
         if not file_path.exists():
             raise HTTPException(
@@ -230,7 +230,7 @@ async def delete_file(
 ):
     """删除文件或目录"""
     try:
-        file_path = resolve_path(x_session_id, request.path)
+        file_path = await resolve_path(x_session_id, request.path)
 
         if not file_path.exists():
             raise HTTPException(
@@ -262,7 +262,7 @@ async def list_directory(
 ):
     """列出目录内容"""
     try:
-        dir_path = resolve_path(x_session_id, request.path)
+        dir_path = await resolve_path(x_session_id, request.path)
 
         if not dir_path.exists():
             raise HTTPException(

@@ -28,6 +28,10 @@ RUN apt update && apt install -y --no-install-recommends \
     fonts-wqy-microhei \
     # 网络工具
     net-tools \
+    # 用户管理工具
+    sudo \
+    passwd \
+    adduser \
     && rm -rf /var/lib/apt/lists/* \
     && apt clean
 
@@ -43,10 +47,11 @@ RUN apt-get update && apt-get install -y curl gnupg && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g pnpm
+RUN npm install -g pnpm && npm install -g vercel
 
-# Install Vercel CLI
-RUN npm install -g vercel
+RUN echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
+    echo "Defaults:root !requiretty" >> /etc/sudoers && \
+    groupadd -g 9999 shipyard_users || true
 
 # 复制项目文件
 COPY . .
