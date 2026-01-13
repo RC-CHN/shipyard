@@ -192,7 +192,13 @@ class ShipService:
         await db_service.update_session_activity(session_id, ship_id)
 
         # Forward request to ship container
-        return await self._forward_to_ship(ship.ip_address, request, session_id)
+        result = await self._forward_to_ship(ship.ip_address, request, session_id)
+        
+        # Extend TTL after successful operation
+        if result.success:
+            await self._extend_ttl_after_operation(ship_id)
+        
+        return result
 
     async def get_logs(self, ship_id: str) -> str:
         """Get ship container logs"""
@@ -246,9 +252,33 @@ class ShipService:
         await db_service.update_session_activity(session_id, ship_id)
 
         # Forward file upload to ship container
-        return await self._upload_file_to_ship(
+        result = await self._upload_file_to_ship(
             ship.ip_address, file_content, file_path, session_id
         )
+        
+        # Extend TTL after successful upload
+        if result.success:
+            await self._extend_ttl_after_operation(ship_id)
+        
+        return result
+
+    async def _extend_ttl_after_operation(self, ship_id: str):
+        """Extend ship TTL after an operation"""
+        from datetime import datetime, timezone
+        
+        ship = await db_service.get_ship(ship_id)
+        if not ship or ship.status == 0:
+            return
+        
+        # Calculate new TTL: extend_ttl_after_ops seconds from now
+        new_ttl = settings.extend_ttl_after_ops
+        ship.ttl = new_ttl
+        await db_service.update_ship(ship)
+        
+        # Reschedule cleanup with new TTL
+        await self._schedule_cleanup(ship_id, new_ttl)
+        
+        logger.info(f"Ship {ship_id} TTL extended to {new_ttl}s after operation")
 
     async def _wait_for_available_slot(self):
         """Wait for an available ship slot"""
