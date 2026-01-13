@@ -181,6 +181,24 @@ class DatabaseService:
         finally:
             await session.close()
 
+    async def find_active_ship_for_session(self, session_id: str) -> Optional[Ship]:
+        """Find an active running ship that this session has access to"""
+        session = self.get_session()
+        try:
+            # Find active ships that this session has access to
+            statement = (
+                select(Ship)
+                .join(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    SessionShip.session_id == session_id,
+                    Ship.status == 1,
+                )
+            )
+            result = await session.execute(statement)
+            return result.scalar_one_or_none()
+        finally:
+            await session.close()
+
     async def find_stopped_ship_for_session(self, session_id: str) -> Optional[Ship]:
         """Find a stopped ship that belongs to this session"""
         session = self.get_session()

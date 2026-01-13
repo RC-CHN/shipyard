@@ -26,7 +26,17 @@ class ShipService:
 
     async def create_ship(self, request: CreateShipRequest, session_id: str) -> Ship:
         """Create a new ship or reuse an existing one for the session"""
-        # First, check if this session has a stopped ship with existing data
+        # First, check if this session already has an active running ship
+        active_ship = await db_service.find_active_ship_for_session(session_id)
+        if active_ship:
+            # Update last activity and return the existing active ship
+            await db_service.update_session_activity(session_id, active_ship.id)
+            logger.info(
+                f"Session {session_id} already has active ship {active_ship.id}, returning it"
+            )
+            return active_ship
+
+        # Second, check if this session has a stopped ship with existing data
         stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
         if stopped_ship and docker_service.ship_data_exists(stopped_ship.id):
             # Restore the stopped ship
@@ -35,7 +45,7 @@ class ShipService:
             )
             return await self._restore_ship(stopped_ship, request, session_id)
 
-        # Second, try to find an available ship that can accept this session
+        # Third, try to find an available ship that can accept this session
         available_ship = await db_service.find_available_ship(session_id)
 
         if available_ship:
@@ -69,7 +79,7 @@ class ShipService:
                 )
                 return available_ship
 
-        # No available ship found, create a new one
+        # Fourth, no available ship found, create a new one
         # Check ship limits
         if settings.behavior_after_max_ship == "reject":
             active_count = await db_service.count_active_ships()
