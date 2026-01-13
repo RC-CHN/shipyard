@@ -2,16 +2,17 @@ version: '3.8'
 
 services:
   shipyard:
-    image: soulter/shipyard:latest
+    image: soulter/shipyard-bay:latest
     ports:
       - "8000:8000"
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///./data/bay.db
       - ACCESS_TOKEN=secret-token
       - MAX_SHIP_NUM=10
-      - BEHAVIOR_AFTER_MAX_SHIP=wait
-      - DOCKER_IMAGE=ship:latest
-      - DOCKER_NETWORK=shipyard
+      - BEHAVIOR_AFTER_MAX_SHIP=reject
+      - DOCKER_IMAGE=soulter/shipyard-ship:latest
+      - DOCKER_NETWORK=bay_shipyard
+      - SHIP_DATA_DIR=${PWD}/ship_data
     volumes:
       - bay_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -23,4 +24,4 @@ volumes:
 
 networks:
   shipyard:
-    external: true
+    driver: bridge

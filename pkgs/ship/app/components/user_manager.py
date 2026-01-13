@@ -12,6 +12,7 @@ import pwd
 import grp
 import shutil
 import shlex
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -30,6 +31,11 @@ USER_ID_COUNTER = USER_ID_START
 USER_GROUP = "shipyard_users"
 USER_GROUP_ID = 9999
 
+# 元数据文件路径
+METADATA_DIR = Path("/app/metadata")
+SESSION_USERS_FILE = METADATA_DIR / "session_users.json"
+USERS_INFO_FILE = METADATA_DIR / "users_info.json"
+
 
 @dataclass
 class ProcessResult:
@@ -39,6 +45,75 @@ class ProcessResult:
     return_code: Optional[int] = None
     pid: Optional[int] = None
     error: Optional[str] = None
+
+
+def save_session_users():
+    """保存 session 到用户的映射关系到磁盘"""
+    try:
+        METADATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(SESSION_USERS_FILE, "w") as f:
+            json.dump(session_users, f, indent=2)
+        logger.info(f"Saved session_users mapping: {len(session_users)} sessions")
+    except Exception as e:
+        logger.error(f"Failed to save session_users: {e}")
+
+
+def load_session_users():
+    """从磁盘加载 session 到用户的映射关系"""
+    global session_users
+    try:
+        if SESSION_USERS_FILE.exists():
+            with open(SESSION_USERS_FILE, "r") as f:
+                session_users = json.load(f)
+            logger.info(f"Loaded session_users mapping: {len(session_users)} sessions")
+        else:
+            logger.info("No existing session_users file found, starting fresh")
+    except Exception as e:
+        logger.error(f"Failed to load session_users: {e}")
+        session_users = {}
+
+
+def save_user_info(username: str, user_id: int, group_id: int, home_dir: str):
+    """保存用户信息到磁盘"""
+    try:
+        METADATA_DIR.mkdir(parents=True, exist_ok=True)
+
+        # 读取现有数据
+        users_info = {}
+        if USERS_INFO_FILE.exists():
+            with open(USERS_INFO_FILE, "r") as f:
+                users_info = json.load(f)
+
+        # 更新用户信息
+        users_info[username] = {
+            "uid": user_id,
+            "gid": group_id,
+            "home_dir": home_dir,
+        }
+
+        # 保存到文件
+        with open(USERS_INFO_FILE, "w") as f:
+            json.dump(users_info, f, indent=2)
+
+        logger.info(f"Saved user info for {username}")
+    except Exception as e:
+        logger.error(f"Failed to save user info for {username}: {e}")
+
+
+def load_users_info() -> Dict:
+    """从磁盘加载所有用户信息"""
+    try:
+        if USERS_INFO_FILE.exists():
+            with open(USERS_INFO_FILE, "r") as f:
+                users_info = json.load(f)
+            logger.info(f"Loaded users info: {len(users_info)} users")
+            return users_info
+        else:
+            logger.info("No existing users_info file found")
+            return {}
+    except Exception as e:
+        logger.error(f"Failed to load users info: {e}")
+        return {}
 
 
 class UserManager:
@@ -90,6 +165,7 @@ class UserManager:
             pwd.getpwnam(username)
             logger.info(f"User {username} already exists")
             session_users[session_id] = username
+            save_session_users()
             return username
         except KeyError:
             pass
@@ -97,7 +173,11 @@ class UserManager:
         # 创建用户主目录
         home_dir = f"/home/{username}"
 
-        # 创建用户
+        # 先手动创建home目录（因为/home是挂载的卷，useradd -m可能失败）
+        home_path = Path(home_dir)
+        home_path.mkdir(parents=True, exist_ok=True)
+
+        # 创建用户（不使用-m选项，因为我们已经手动创建了目录）
         process = await asyncio.create_subprocess_exec(
             "useradd",
             "-u",
@@ -106,7 +186,6 @@ class UserManager:
             USER_GROUP,  # 主用户组
             "-d",
             home_dir,  # 主目录
-            "-m",  # 创建主目录
             "-s",
             "/bin/bash",  # 默认shell
             username,
@@ -120,6 +199,9 @@ class UserManager:
             if "already exists" in error_msg:
                 logger.info(f"User {username} already exists")
                 session_users[session_id] = username
+                save_session_users()
+                # 即使用户已存在，也确保workspace正确设置
+                await UserManager.setup_user_workspace(username, home_dir)
                 return username
             else:
                 raise HTTPException(
@@ -129,10 +211,15 @@ class UserManager:
 
         logger.info(f"Created user {username} with UID {user_id}")
 
-        # 设置用户主目录权限
+        # 设置用户主目录和workspace权限
         await UserManager.setup_user_workspace(username, home_dir)
 
         session_users[session_id] = username
+
+        # 保存用户信息和映射关系到磁盘
+        save_user_info(username, user_id, USER_GROUP_ID, home_dir)
+        save_session_users()
+
         return username
 
     @staticmethod
@@ -190,6 +277,89 @@ cd ~/workspace
             raise HTTPException(status_code=404, detail=f"User {username} not found")
 
     @staticmethod
+    async def recreate_user_from_metadata(username: str, user_info: Dict) -> bool:
+        """从元数据重建 Linux 用户账户"""
+        try:
+            # 检查用户是否已存在
+            try:
+                pwd.getpwnam(username)
+                logger.info(f"User {username} already exists, skipping recreation")
+                return True
+            except KeyError:
+                pass
+
+            # 确保用户组存在
+            await UserManager.ensure_shipyard_group()
+
+            user_id = user_info.get("uid")
+            home_dir = user_info.get("home_dir")
+
+            if not user_id or not home_dir:
+                logger.error(f"Missing uid or home_dir for user {username}")
+                return False
+
+            # 重建用户账户
+            process = await asyncio.create_subprocess_exec(
+                "useradd",
+                "-u",
+                str(user_id),
+                "-g",
+                USER_GROUP,
+                "-d",
+                home_dir,
+                "-M",  # 不创建主目录（已存在）
+                "-s",
+                "/bin/bash",
+                username,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                error_msg = stderr.decode().strip()
+                if "already exists" in error_msg:
+                    logger.info(f"User {username} already exists")
+                    return True
+                else:
+                    logger.error(f"Failed to recreate user {username}: {error_msg}")
+                    return False
+
+            logger.info(f"Recreated user {username} with UID {user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to recreate user {username}: {e}")
+            return False
+
+    @staticmethod
+    async def restore_all_users() -> int:
+        """启动时恢复所有用户账户"""
+        try:
+            # 加载映射关系
+            load_session_users()
+
+            # 加载用户信息
+            users_info = load_users_info()
+
+            if not users_info:
+                logger.info("No users to restore")
+                return 0
+
+            # 恢复用户账户
+            restored_count = 0
+            for username, user_info in users_info.items():
+                if await UserManager.recreate_user_from_metadata(username, user_info):
+                    restored_count += 1
+
+            logger.info(f"Restored {restored_count}/{len(users_info)} users")
+            return restored_count
+
+        except Exception as e:
+            logger.error(f"Failed to restore users: {e}")
+            return 0
+
+    @staticmethod
     async def cleanup_session_user(session_id: str) -> bool:
         """清理session用户"""
         username = session_users.get(session_id)
@@ -209,6 +379,7 @@ cd ~/workspace
 
             if session_id in session_users:
                 del session_users[session_id]
+                save_session_users()
 
             logger.info(f"Cleaned up session user {username} for session {session_id}")
             return True

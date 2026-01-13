@@ -1,13 +1,30 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from .components.filesystem import router as fs_router
 from .components.ipython import router as ipython_router
 from .components.shell import router as shell_router
 from .components.upload import router as upload_router
+from .components.user_manager import UserManager
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    logger.info("Starting Ship container initialization...")
+    restored_count = await UserManager.restore_all_users()
+    logger.info(f"User restoration completed: {restored_count} users restored")
+    yield
+    logger.info("Ship container shutting down")
+
 
 app = FastAPI(
     title="Ship API",
     description="A containerized execution environment with filesystem, IPython, and shell capabilities",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Include component routers

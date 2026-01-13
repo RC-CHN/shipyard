@@ -54,6 +54,10 @@ class Settings(BaseSettings):
         description="Maximum file upload size in bytes (default: 100MB)",
     )
 
+    ship_data_dir: str = Field(
+        default="~/ship_data", description="Base directory for ship data storage"
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

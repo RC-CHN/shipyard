@@ -181,6 +181,24 @@ class DatabaseService:
         finally:
             await session.close()
 
+    async def find_stopped_ship_for_session(self, session_id: str) -> Optional[Ship]:
+        """Find a stopped ship that belongs to this session"""
+        session = self.get_session()
+        try:
+            # Find stopped ships that this session has access to
+            statement = (
+                select(Ship)
+                .join(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    SessionShip.session_id == session_id,
+                    Ship.status == 0,
+                )
+            )
+            result = await session.execute(statement)
+            return result.scalar_one_or_none()
+        finally:
+            await session.close()
+
     async def increment_ship_session_count(self, ship_id: str) -> Optional[Ship]:
         """Increment the current session count for a ship"""
         session = self.get_session()

@@ -101,6 +101,16 @@ class DockerService:
             logger.error(f"Failed to stop container {container_id}: {e}")
             return False
 
+    def ship_data_exists(self, ship_id: str) -> bool:
+        """Check if ship data directory exists"""
+        import os
+        ship_data_dir = os.path.expanduser(f"{settings.ship_data_dir}/{ship_id}")
+        home_dir = f"{ship_data_dir}/home"
+        metadata_dir = f"{ship_data_dir}/metadata"
+        
+        # Check if both directories exist
+        return os.path.exists(home_dir) and os.path.exists(metadata_dir)
+
     async def get_container_logs(self, container_id: str) -> str:
         """Get container logs"""
         if not self.client:
@@ -150,12 +160,38 @@ class DockerService:
         self, ship: Ship, spec: Optional[ShipSpec] = None
     ) -> Dict[str, Any]:
         """Build container configuration for aiodocker"""
+        # Prepare host paths for volume mounts
+        import os
+
+        ship_data_dir = os.path.expanduser(f"{settings.ship_data_dir}/{ship.id}")
+        home_dir = f"{ship_data_dir}/home"
+        metadata_dir = f"{ship_data_dir}/metadata"
+
+        # Create directories if they don't exist
+        os.makedirs(home_dir, exist_ok=True)
+        os.makedirs(metadata_dir, exist_ok=True)
+
+        # Set permissions to allow container to manage users and directories
+        # Using 0o777 to ensure ship container (running as root) can create/manage user directories
+        try:
+            os.chmod(home_dir, 0o777)
+            os.chmod(metadata_dir, 0o777)
+        except Exception as e:
+            logger.error(
+                f"Failed to set permissions for ship {ship.id} directories: {e}"
+            )
+            raise
+
         # Host configuration for resource limits
         host_config = {
             "RestartPolicy": {"Name": "no"},
             "PortBindings": {
                 "8123/tcp": [{"HostPort": ""}]  # Let Docker assign random port
             },
+            "Binds": [
+                f"{home_dir}:/home",
+                f"{metadata_dir}:/app/metadata",
+            ],
         }
 
         # Apply spec if provided

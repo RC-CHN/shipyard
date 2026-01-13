@@ -26,7 +26,14 @@ class ShipService:
 
     async def create_ship(self, request: CreateShipRequest, session_id: str) -> Ship:
         """Create a new ship or reuse an existing one for the session"""
-        # First, try to find an available ship that can accept this session
+        # First, check if this session has a stopped ship with existing data
+        stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
+        if stopped_ship and docker_service.ship_data_exists(stopped_ship.id):
+            # Restore the stopped ship
+            logger.info(f"Restoring stopped ship {stopped_ship.id} for session {session_id}")
+            return await self._restore_ship(stopped_ship, request, session_id)
+        
+        # Second, try to find an available ship that can accept this session
         available_ship = await db_service.find_available_ship(session_id)
 
         if available_ship:
@@ -284,7 +291,7 @@ class ShipService:
                 ship.status = 0
                 await db_service.update_ship(ship)
 
-                # Stop container
+                # Stop container (but keep ship_data directory)
                 if ship.container_id:
                     await docker_service.stop_ship_container(ship.container_id)
 
@@ -298,6 +305,58 @@ class ShipService:
             # Remove task from tracking
             if ship_id in self._cleanup_tasks:
                 del self._cleanup_tasks[ship_id]
+
+    async def _restore_ship(
+        self, ship: Ship, request: CreateShipRequest, session_id: str
+    ) -> Ship:
+        """Restore a stopped ship by recreating its container"""
+        try:
+            # Recreate container with existing ship data
+            container_info = await docker_service.create_ship_container(
+                ship, request.spec
+            )
+
+            # Update ship with new container info
+            ship.container_id = container_info["container_id"]
+            ship.ip_address = container_info["ip_address"]
+            ship.status = 1  # Mark as running
+            ship.ttl = request.ttl  # Update TTL
+            ship = await db_service.update_ship(ship)
+
+            # Wait for ship to be ready
+            if not ship.ip_address:
+                logger.error(f"Restored ship {ship.id} has no IP address")
+                raise RuntimeError("Ship has no IP address")
+
+            logger.info(f"Waiting for restored ship {ship.id} to become ready...")
+            is_ready = await self._wait_for_ship_ready(ship.ip_address)
+
+            if not is_ready:
+                # Ship failed to become ready, cleanup
+                logger.error(f"Restored ship {ship.id} failed health check")
+                if ship.container_id:
+                    await docker_service.stop_ship_container(ship.container_id)
+                ship.status = 0
+                await db_service.update_ship(ship)
+                raise RuntimeError(
+                    f"Ship failed to become ready within {settings.ship_health_check_timeout} seconds"
+                )
+
+            # Update last activity for this session
+            await db_service.update_session_activity(session_id, ship.id)
+
+            # Schedule TTL cleanup
+            await self._schedule_cleanup(ship.id, ship.ttl)
+
+            logger.info(f"Ship {ship.id} restored successfully for session {session_id}")
+            return ship
+
+        except Exception as e:
+            # Mark ship as stopped on failure
+            ship.status = 0
+            await db_service.update_ship(ship)
+            logger.error(f"Failed to restore ship {ship.id}: {e}")
+            raise
 
     async def _forward_to_ship(
         self, ship_ip: str, request: ExecRequest, session_id: str
