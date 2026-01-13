@@ -29,12 +29,25 @@ class ShipService:
         # First, check if this session already has an active running ship
         active_ship = await db_service.find_active_ship_for_session(session_id)
         if active_ship:
-            # Update last activity and return the existing active ship
-            await db_service.update_session_activity(session_id, active_ship.id)
-            logger.info(
-                f"Session {session_id} already has active ship {active_ship.id}, returning it"
-            )
-            return active_ship
+            # Verify that the container actually exists and is running
+            if active_ship.container_id and await docker_service.is_container_running(
+                active_ship.container_id
+            ):
+                # Update last activity and return the existing active ship
+                await db_service.update_session_activity(session_id, active_ship.id)
+                logger.info(
+                    f"Session {session_id} already has active ship {active_ship.id}, returning it"
+                )
+                return active_ship
+            else:
+                # Container doesn't exist or isn't running, mark ship as stopped and restore it
+                logger.warning(
+                    f"Ship {active_ship.id} is marked active but container is not running, restoring..."
+                )
+                active_ship.status = 0
+                await db_service.update_ship(active_ship)
+                # Restore the ship
+                return await self._restore_ship(active_ship, request, session_id)
 
         # Second, check if this session has a stopped ship with existing data
         stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
@@ -47,6 +60,20 @@ class ShipService:
 
         # Third, try to find an available ship that can accept this session
         available_ship = await db_service.find_available_ship(session_id)
+
+        if available_ship:
+            # Verify that the container actually exists and is running
+            if not available_ship.container_id or not await docker_service.is_container_running(
+                available_ship.container_id
+            ):
+                # Container doesn't exist or isn't running, mark ship as stopped
+                logger.warning(
+                    f"Ship {available_ship.id} is marked active but container is not running, marking as stopped"
+                )
+                available_ship.status = 0
+                await db_service.update_ship(available_ship)
+                # Don't use this ship, continue to create a new one
+                available_ship = None
 
         if available_ship:
             # Check if this session already has access to this ship
@@ -310,8 +337,6 @@ class ShipService:
 
     async def _extend_ttl_after_operation(self, ship_id: str):
         """Extend ship TTL after an operation"""
-        from datetime import datetime, timezone
-
         ship = await db_service.get_ship(ship_id)
         if not ship or ship.status == 0:
             return
