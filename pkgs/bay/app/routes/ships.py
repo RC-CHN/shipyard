@@ -16,6 +16,13 @@ from app.config import settings
 router = APIRouter()
 
 
+@router.get("/ships", response_model=list[ShipResponse])
+async def list_ships(token: str = Depends(verify_token)):
+    """Get all running ships"""
+    ships = await ship_service.list_active_ships()
+    return [ShipResponse.model_validate(ship) for ship in ships]
+
+
 @router.post("/ship", response_model=ShipResponse, status_code=status.HTTP_201_CREATED)
 async def create_ship(
     request: CreateShipRequest,

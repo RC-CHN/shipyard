@@ -5,6 +5,7 @@ import logging
 from app.config import settings
 from app.database import db_service
 from app.services.docker_service import docker_service
+from app.services.status_checker import status_checker
 from app.routes import health, ships, stat
 
 # Configure logging
@@ -30,6 +31,10 @@ async def lifespan(app: FastAPI):
         await docker_service.initialize()
         logger.info("Docker service initialized")
 
+        # Start status checker
+        await status_checker.start()
+        logger.info("Status checker started")
+
         logger.info("Bay API service started successfully")
 
     except Exception as e:
@@ -40,6 +45,13 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down Bay API service...")
+
+    # Stop status checker
+    try:
+        await status_checker.stop()
+        logger.info("Status checker stopped")
+    except Exception as e:
+        logger.error(f"Error stopping status checker: {e}")
 
     # Close Docker client
     try:
