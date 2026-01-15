@@ -36,7 +36,7 @@ async def get_or_create_kernel(session_id: str) -> AsyncKernelManager:
     """获取或创建内核管理器，基于 session_id"""
     if session_id not in kernel_managers:
         # 创建会话工作目录
-        workspace_dir = get_session_workspace(session_id)
+        workspace_dir = await get_session_workspace(session_id)
 
         # 创建新的内核管理器
         km: AsyncKernelManager = AsyncKernelManager()
