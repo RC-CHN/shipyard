@@ -8,7 +8,7 @@ container driver based on configuration.
 from typing import Optional
 import logging
 
-from app.drivers.base import ContainerDriver
+from app.drivers.core.base import ContainerDriver
 
 logger = logging.getLogger(__name__)
 
@@ -19,53 +19,54 @@ _driver: Optional[ContainerDriver] = None
 def create_driver(driver_type: str) -> ContainerDriver:
     """
     Create a container driver instance based on the specified type.
-    
+
     Args:
         driver_type: The type of driver to create:
             - "docker": For Bay running inside a Docker container (uses container IPs)
             - "docker-host": For Bay running on the host machine (uses port mapping)
             - "containerd": For containerd runtime (not yet implemented)
             - "podman": For Podman runtime (not yet implemented)
-        
+
     Returns:
         A ContainerDriver instance
-        
+
     Raises:
         ValueError: If the driver type is not supported
         NotImplementedError: If the driver type is planned but not yet implemented
     """
     if driver_type == "docker":
-        from app.drivers.docker_driver import DockerDriver
+        from app.drivers.docker.driver import DockerDriver
+
         return DockerDriver()
-    elif driver_type == "docker-host":
-        from app.drivers.docker_host_driver import DockerHostDriver
+    if driver_type == "docker-host":
+        from app.drivers.docker.host_driver import DockerHostDriver
+
         return DockerHostDriver()
-    elif driver_type == "containerd":
+    if driver_type == "containerd":
         # Placeholder for future containerd implementation
         raise NotImplementedError(
             "Containerd driver is not yet implemented. "
             "Please use 'docker' or 'docker-host' driver, or implement ContainerdDriver."
         )
-    elif driver_type == "podman":
+    if driver_type == "podman":
         # Placeholder for future podman implementation
         raise NotImplementedError(
             "Podman driver is not yet implemented. "
             "Please use 'docker' or 'docker-host' driver, or implement PodmanDriver."
         )
-    else:
-        raise ValueError(
-            f"Unknown driver type: {driver_type}. "
-            f"Supported types: docker, docker-host, containerd, podman"
-        )
+    raise ValueError(
+        f"Unknown driver type: {driver_type}. "
+        f"Supported types: docker, docker-host, containerd, podman"
+    )
 
 
 def get_driver() -> ContainerDriver:
     """
     Get the global container driver instance.
-    
+
     Returns:
         The global ContainerDriver instance
-        
+
     Raises:
         RuntimeError: If the driver has not been initialized
     """
@@ -81,10 +82,10 @@ def get_driver() -> ContainerDriver:
 async def initialize_driver(driver_type: str) -> ContainerDriver:
     """
     Initialize and set the global container driver.
-    
+
     Args:
         driver_type: The type of driver to create
-        
+
     Returns:
         The initialized ContainerDriver instance
     """

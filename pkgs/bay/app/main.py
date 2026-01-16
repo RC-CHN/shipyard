@@ -5,7 +5,7 @@ import logging
 from app.config import settings
 from app.database import db_service
 from app.drivers import initialize_driver, close_driver
-from app.services.status_checker import status_checker
+from app.services.status import status_checker
 from app.routes import health, ships, stat
 
 # Configure logging

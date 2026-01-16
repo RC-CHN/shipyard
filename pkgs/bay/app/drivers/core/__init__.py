@@ -1,9 +1,4 @@
-"""
-Container Driver abstraction layer for Bay.
-
-This module provides a pluggable driver architecture for container runtimes,
-allowing Bay to work with Docker, containerd, or other container runtimes.
-"""
+"""Core driver abstractions and factory utilities."""
 
 from app.drivers.core.base import ContainerDriver, ContainerInfo
 from app.drivers.core.factory import (

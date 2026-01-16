@@ -9,7 +9,7 @@ from app.models import (
     LogsResponse,
     UploadFileResponse,
 )
-from app.services.ship_service import ship_service
+from app.services.ship import ship_service
 from app.auth import verify_token
 from app.config import settings
 

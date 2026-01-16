@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Optional
+
 from app.database import db_service
 from app.drivers import get_driver
 
