@@ -26,14 +26,22 @@ class Settings(BaseSettings):
     )
 
     # Container driver settings
-    container_driver: Literal["docker", "containerd"] = Field(
-        default="docker",
-        description="Container runtime driver to use (docker, containerd)"
+    # Supported drivers:
+    # - docker: For Bay running inside a Docker container (uses container network IPs)
+    # - docker-host: For Bay running on the host machine (uses localhost + port mapping)
+    # - containerd: For containerd runtime (not yet implemented)
+    # - podman: For Podman runtime (not yet implemented)
+    container_driver: Literal["docker", "docker-host", "containerd", "podman"] = Field(
+        default="docker-host",
+        description="Container runtime driver to use"
     )
 
     # Docker/Container settings
     docker_image: str = Field(default="ship:latest", description="Ship container image")
     docker_network: str = Field(default="shipyard", description="Docker network name")
+    ship_container_port: int = Field(
+        default=8123, description="Port that Ship containers listen on"
+    )
 
     # Ship default settings
     default_ship_ttl: int = Field(

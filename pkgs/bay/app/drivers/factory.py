@@ -21,27 +21,41 @@ def create_driver(driver_type: str) -> ContainerDriver:
     Create a container driver instance based on the specified type.
     
     Args:
-        driver_type: The type of driver to create ("docker", "containerd", etc.)
+        driver_type: The type of driver to create:
+            - "docker": For Bay running inside a Docker container (uses container IPs)
+            - "docker-host": For Bay running on the host machine (uses port mapping)
+            - "containerd": For containerd runtime (not yet implemented)
+            - "podman": For Podman runtime (not yet implemented)
         
     Returns:
         A ContainerDriver instance
         
     Raises:
         ValueError: If the driver type is not supported
+        NotImplementedError: If the driver type is planned but not yet implemented
     """
     if driver_type == "docker":
         from app.drivers.docker_driver import DockerDriver
         return DockerDriver()
+    elif driver_type == "docker-host":
+        from app.drivers.docker_host_driver import DockerHostDriver
+        return DockerHostDriver()
     elif driver_type == "containerd":
         # Placeholder for future containerd implementation
         raise NotImplementedError(
             "Containerd driver is not yet implemented. "
-            "Please use 'docker' driver or implement ContainerdDriver."
+            "Please use 'docker' or 'docker-host' driver, or implement ContainerdDriver."
+        )
+    elif driver_type == "podman":
+        # Placeholder for future podman implementation
+        raise NotImplementedError(
+            "Podman driver is not yet implemented. "
+            "Please use 'docker' or 'docker-host' driver, or implement PodmanDriver."
         )
     else:
         raise ValueError(
             f"Unknown driver type: {driver_type}. "
-            f"Supported types: docker, containerd"
+            f"Supported types: docker, docker-host, containerd, podman"
         )
 
 
