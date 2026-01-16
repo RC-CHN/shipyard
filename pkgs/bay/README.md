@@ -97,10 +97,36 @@ Authorization: Bearer <your-access-token>
 - `DATABASE_URL`: SQLite数据库文件路径
 - `MAX_SHIP_NUM`: 最大Ship数量
 - `BEHAVIOR_AFTER_MAX_SHIP`: 达到最大Ship数量后的行为（reject/wait）
+- `CONTAINER_DRIVER`: 容器运行时驱动（docker/containerd，默认docker）
 - `DOCKER_IMAGE`: Ship容器镜像名称
 - `SHIP_HEALTH_CHECK_TIMEOUT`: Ship健康检查最大超时时间（秒，默认60）
 - `SHIP_HEALTH_CHECK_INTERVAL`: Ship健康检查间隔时间（秒，默认2）
 - `DOCKER_NETWORK`: Docker网络名称
+
+## 容器驱动架构
+
+Bay 使用可插拔的驱动架构来支持不同的容器运行时：
+
+### 支持的驱动
+
+- **docker** (默认): 使用 Docker 引擎，需要挂载 `/var/run/docker.sock`
+- **containerd** (计划中): 使用 containerd 运行时
+
+### 自定义驱动
+
+要实现自定义容器驱动，需要：
+
+1. 在 `app/drivers/` 目录下创建新的驱动文件
+2. 继承 `ContainerDriver` 抽象基类
+3. 实现所有必需的方法：
+   - `initialize()`: 初始化驱动
+   - `close()`: 关闭驱动
+   - `create_ship_container()`: 创建容器
+   - `stop_ship_container()`: 停止容器
+   - `ship_data_exists()`: 检查数据目录
+   - `get_container_logs()`: 获取日志
+   - `is_container_running()`: 检查容器状态
+4. 在 `app/drivers/factory.py` 中注册驱动
 
 ## 开发
 

@@ -13,7 +13,7 @@ from app.models import (
     UploadFileResponse,
 )
 from app.database import db_service
-from app.services.docker_service import docker_service
+from app.drivers import get_driver
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class ShipService:
         active_ship = await db_service.find_active_ship_for_session(session_id)
         if active_ship:
             # Verify that the container actually exists and is running
-            if active_ship.container_id and await docker_service.is_container_running(
+            if active_ship.container_id and await get_driver().is_container_running(
                 active_ship.container_id
             ):
                 # Update last activity and return the existing active ship
@@ -52,7 +52,7 @@ class ShipService:
 
         # Second, check if this session has a stopped ship with existing data
         stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
-        if stopped_ship and docker_service.ship_data_exists(stopped_ship.id):
+        if stopped_ship and get_driver().ship_data_exists(stopped_ship.id):
             # Restore the stopped ship
             logger.info(
                 f"Restoring stopped ship {stopped_ship.id} for session {session_id}"
@@ -66,7 +66,7 @@ class ShipService:
             # Verify that the container actually exists and is running
             if (
                 not available_ship.container_id
-                or not await docker_service.is_container_running(
+                or not await get_driver().is_container_running(
                     available_ship.container_id
                 )
             ):
@@ -127,13 +127,13 @@ class ShipService:
 
         try:
             # Create container
-            container_info = await docker_service.create_ship_container(
+            container_info = await get_driver().create_ship_container(
                 ship, request.spec
             )
 
             # Update ship with container info
-            ship.container_id = container_info["container_id"]
-            ship.ip_address = container_info["ip_address"]
+            ship.container_id = container_info.container_id
+            ship.ip_address = container_info.ip_address
             ship = await db_service.update_ship(ship)
 
             # Wait for ship to be ready
@@ -149,7 +149,7 @@ class ShipService:
                 # Ship failed to become ready, cleanup
                 logger.error(f"Ship {ship.id} failed health check, cleaning up")
                 if ship.container_id:
-                    await docker_service.stop_ship_container(ship.container_id)
+                    await get_driver().stop_ship_container(ship.container_id)
                 await db_service.delete_ship(ship.id)
                 raise RuntimeError(
                     f"Ship failed to become ready within {settings.ship_health_check_timeout} seconds"
@@ -202,7 +202,7 @@ class ShipService:
         # Stop container if exists
         if ship.container_id:
             try:
-                await docker_service.stop_ship_container(ship.container_id)
+                await get_driver().stop_ship_container(ship.container_id)
             except Exception as e:
                 logger.error(f"Failed to stop container for ship {ship_id}: {e}")
 
@@ -259,7 +259,7 @@ class ShipService:
         if not ship or not ship.container_id:
             return ""
 
-        return await docker_service.get_container_logs(ship.container_id)
+        return await get_driver().get_container_logs(ship.container_id)
 
     async def list_active_ships(self) -> List[Ship]:
         """List all active ships"""
@@ -479,7 +479,7 @@ class ShipService:
 
                 # Stop container (but keep ship_data directory)
                 if ship.container_id:
-                    await docker_service.stop_ship_container(ship.container_id)
+                    await get_driver().stop_ship_container(ship.container_id)
 
                 logger.info(f"Ship {ship_id} cleaned up after TTL expiration")
         except asyncio.CancelledError:
@@ -498,13 +498,13 @@ class ShipService:
         """Restore a stopped ship by recreating its container"""
         try:
             # Recreate container with existing ship data
-            container_info = await docker_service.create_ship_container(
+            container_info = await get_driver().create_ship_container(
                 ship, request.spec
             )
 
             # Update ship with new container info
-            ship.container_id = container_info["container_id"]
-            ship.ip_address = container_info["ip_address"]
+            ship.container_id = container_info.container_id
+            ship.ip_address = container_info.ip_address
             ship.status = 1  # Mark as running
             ship.ttl = request.ttl  # Update TTL
             ship = await db_service.update_ship(ship)
@@ -521,7 +521,7 @@ class ShipService:
                 # Ship failed to become ready, cleanup
                 logger.error(f"Restored ship {ship.id} failed health check")
                 if ship.container_id:
-                    await docker_service.stop_ship_container(ship.container_id)
+                    await get_driver().stop_ship_container(ship.container_id)
                 ship.status = 0
                 await db_service.update_ship(ship)
                 raise RuntimeError(

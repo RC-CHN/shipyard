@@ -25,7 +25,13 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///./bay.db", description="Database connection URL"
     )
 
-    # Docker settings
+    # Container driver settings
+    container_driver: Literal["docker", "containerd"] = Field(
+        default="docker",
+        description="Container runtime driver to use (docker, containerd)"
+    )
+
+    # Docker/Container settings
     docker_image: str = Field(default="ship:latest", description="Ship container image")
     docker_network: str = Field(default="shipyard", description="Docker network name")
 

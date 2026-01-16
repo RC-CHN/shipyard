@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 from app.config import settings
 from app.database import db_service
-from app.services.docker_service import docker_service
+from app.drivers import initialize_driver, close_driver
 from app.services.status_checker import status_checker
 from app.routes import health, ships, stat
 
@@ -27,9 +27,9 @@ async def lifespan(app: FastAPI):
         await db_service.create_tables()
         logger.info("Database initialized")
 
-        # Initialize Docker service
-        await docker_service.initialize()
-        logger.info("Docker service initialized")
+        # Initialize container driver
+        await initialize_driver(settings.container_driver)
+        logger.info(f"Container driver initialized: {settings.container_driver}")
 
         # Start status checker
         await status_checker.start()
@@ -53,12 +53,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error stopping status checker: {e}")
 
-    # Close Docker client
+    # Close container driver
     try:
-        await docker_service.close()
-        logger.info("Docker service closed")
+        await close_driver()
+        logger.info("Container driver closed")
     except Exception as e:
-        logger.error(f"Error closing Docker service: {e}")
+        logger.error(f"Error closing container driver: {e}")
 
 
 def create_app() -> FastAPI:
