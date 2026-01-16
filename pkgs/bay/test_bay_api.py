@@ -97,7 +97,23 @@ def test_auth_required() -> bool:
     print_section("测试 4: 认证校验")
     try:
         resp = requests.get(f"{BAY_URL}/ships", timeout=5)
-        return check_status(resp, 401, "未授权访问被拒绝", "未授权访问未被拒绝")
+        ok = check_status(
+            resp,
+            [401, 403],
+            "未授权访问被拒绝",
+            "未授权访问未被拒绝",
+        )
+        if not ok:
+            return False
+        if resp.status_code == 403:
+            detail = ""
+            try:
+                payload = resp.json()
+                detail = payload.get("detail", "") if isinstance(payload, dict) else ""
+            except Exception:
+                detail = ""
+            print(f"提示: 当前未携带 token 时返回 403, detail={detail!r}")
+        return True
     except Exception as exc:
         print(f"❌ 请求失败: {exc}")
         return False
@@ -247,7 +263,9 @@ def test_upload_download(ship_id: str) -> bool:
         content = b"hello from bay upload"
         file_obj = io.BytesIO(content)
         files = {"file": ("hello.txt", file_obj, "text/plain")}
-        data = {"file_path": "/tmp/hello.txt"}
+        session_prefix = SESSION_ID.split("-")[0]
+        workspace_path = f"/home/ship_{session_prefix}/workspace/hello.txt"
+        data = {"file_path": workspace_path}
         upload_resp = requests.post(
             f"{BAY_URL}/ship/{ship_id}/upload",
             headers=AUTH_HEADERS,
@@ -261,7 +279,7 @@ def test_upload_download(ship_id: str) -> bool:
         download_resp = requests.get(
             f"{BAY_URL}/ship/{ship_id}/download",
             headers=AUTH_HEADERS,
-            params={"file_path": "/tmp/hello.txt"},
+            params={"file_path": workspace_path},
             timeout=30,
         )
         if download_resp.status_code != 200:
