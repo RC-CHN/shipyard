@@ -42,17 +42,18 @@ def create_driver(driver_type: str) -> ContainerDriver:
         from app.drivers.docker.host_driver import DockerHostDriver
 
         return DockerHostDriver()
+    if driver_type == "podman":
+        from app.drivers.podman.driver import PodmanDriver
+
+        return PodmanDriver()
+    if driver_type == "podman-host":
+        from app.drivers.podman.host_driver import PodmanHostDriver
+
+        return PodmanHostDriver()
     if driver_type == "containerd":
-        # Placeholder for future containerd implementation
         raise NotImplementedError(
             "Containerd driver is not yet implemented. "
-            "Please use 'docker' or 'docker-host' driver, or implement ContainerdDriver."
-        )
-    if driver_type == "podman":
-        # Placeholder for future podman implementation
-        raise NotImplementedError(
-            "Podman driver is not yet implemented. "
-            "Please use 'docker' or 'docker-host' driver, or implement PodmanDriver."
+            "Please use 'docker', 'docker-host', 'podman', or 'podman-host' driver."
         )
     raise ValueError(
         f"Unknown driver type: {driver_type}. "

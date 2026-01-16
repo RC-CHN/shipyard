@@ -29,9 +29,10 @@ class Settings(BaseSettings):
     # Supported drivers:
     # - docker: For Bay running inside a Docker container (uses container network IPs)
     # - docker-host: For Bay running on the host machine (uses localhost + port mapping)
+    # - podman: For Podman runtime (uses container network IPs)
+    # - podman-host: For Podman on host machine (uses localhost + port mapping)
     # - containerd: For containerd runtime (not yet implemented)
-    # - podman: For Podman runtime (not yet implemented)
-    container_driver: Literal["docker", "docker-host", "containerd", "podman"] = Field(
+    container_driver: Literal["docker", "docker-host", "podman", "podman-host", "containerd"] = Field(
         default="docker-host",
         description="Container runtime driver to use"
     )
