@@ -9,7 +9,7 @@ containers instead of internal network IPs.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from app.config import settings
 from app.drivers.podman.base import BasePodmanDriver
@@ -35,20 +35,22 @@ class PodmanHostDriver(BasePodmanDriver):
         - Set CONTAINER_DRIVER=podman-host
     """
 
-    def _get_ip_address(self, container: Any, ship_id: str) -> Optional[str]:
+    def _get_ip_address(
+        self, container_info: Dict[str, Any], ship_id: str
+    ) -> Optional[str]:
         """
-        Extract IP address from container using port mapping.
+        Extract IP address from container info using port mapping.
 
         In host mode, we use localhost:mapped_port instead of container IP.
 
         Args:
-            container: The Podman container object
+            container_info: Container inspection data
             ship_id: The ship ID (for logging)
 
         Returns:
             The localhost:port string to reach the container
         """
-        network_settings = container.attrs.get("NetworkSettings", {})
+        network_settings = container_info.get("NetworkSettings", {})
         ports = network_settings.get("Ports", {})
 
         port_key = f"{settings.ship_container_port}/tcp"
@@ -65,4 +67,4 @@ class PodmanHostDriver(BasePodmanDriver):
             "Could not get port mapping for ship %s, falling back to container IP",
             ship_id
         )
-        return super()._get_ip_address(container, ship_id)
+        return super()._get_ip_address(container_info, ship_id)

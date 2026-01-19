@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # - podman-host: For Podman on host machine (uses localhost + port mapping)
     # - containerd: For containerd runtime (not yet implemented)
     container_driver: Literal["docker", "docker-host", "podman", "podman-host", "containerd"] = Field(
-        default="docker-host",
+        default="docker",
         description="Container runtime driver to use"
     )
 

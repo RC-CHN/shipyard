@@ -1,9 +1,8 @@
 """
 Podman container driver implementation.
 
-This module implements the ContainerDriver interface using Podman (via podman-py).
-Podman is API-compatible with Docker, so the implementation is similar to
-DockerDriver, using the Podman UNIX socket.
+This module implements the ContainerDriver interface using Podman's
+Docker-compatible API via aiodocker.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ class PodmanDriver(BasePodmanDriver):
     """
     Podman implementation of the ContainerDriver interface.
 
-    Uses podman-py for container operations. Requires access to the Podman socket.
+    Uses aiodocker for container operations via Podman's Docker-compatible socket.
 
     This driver is designed for when Bay runs inside a container
     and can access other containers via Podman network IPs.
@@ -33,5 +32,5 @@ class PodmanDriver(BasePodmanDriver):
     """
 
     # This driver uses the default implementation from BasePodmanDriver
-    # which returns Podman network IPs via _get_ip_address()
+    # which inherits from BaseDockerDriver and returns network IPs via _get_ip_address()
     pass
