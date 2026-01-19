@@ -25,9 +25,24 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///./bay.db", description="Database connection URL"
     )
 
-    # Docker settings
+    # Container driver settings
+    # Supported drivers:
+    # - docker: For Bay running inside a Docker container (uses container network IPs)
+    # - docker-host: For Bay running on the host machine (uses localhost + port mapping)
+    # - podman: For Podman runtime (uses container network IPs)
+    # - podman-host: For Podman on host machine (uses localhost + port mapping)
+    # - containerd: For containerd runtime (not yet implemented)
+    container_driver: Literal["docker", "docker-host", "podman", "podman-host", "containerd"] = Field(
+        default="docker",
+        description="Container runtime driver to use"
+    )
+
+    # Docker/Container settings
     docker_image: str = Field(default="ship:latest", description="Ship container image")
     docker_network: str = Field(default="shipyard", description="Docker network name")
+    ship_container_port: int = Field(
+        default=8123, description="Port that Ship containers listen on"
+    )
 
     # Ship default settings
     default_ship_ttl: int = Field(

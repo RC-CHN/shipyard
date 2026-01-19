@@ -11,6 +11,7 @@ services:
       - ACCESS_TOKEN=secret-token
       - MAX_SHIP_NUM=10
       - BEHAVIOR_AFTER_MAX_SHIP=reject
+      - CONTAINER_DRIVER=docker
       - DOCKER_IMAGE=soulter/shipyard-ship:latest
       - DOCKER_NETWORK=shipyard_network
       - SHIP_DATA_DIR=${PWD}/data/shipyard/ship_mnt_data
@@ -25,4 +26,4 @@ services:
 networks:
   shipyard:
     name: shipyard_network
-    driver: bridge
+    external: true

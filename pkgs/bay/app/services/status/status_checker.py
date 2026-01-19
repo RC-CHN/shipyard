@@ -1,8 +1,9 @@
 import asyncio
 import logging
 from typing import Optional
+
 from app.database import db_service
-from app.services.docker_service import docker_service
+from app.drivers import get_driver
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ class StatusChecker:
             for ship in ships:
                 # Check if container is actually running
                 if ship.container_id:
-                    is_running = await docker_service.is_container_running(
+                    is_running = await get_driver().is_container_running(
                         ship.container_id
                     )
 

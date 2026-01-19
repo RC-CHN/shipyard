@@ -1,8 +1,15 @@
-import aiohttp
+"""
+Ship service module.
+
+This module provides the ShipService class for managing Ship container lifecycle
+and operations, including creation, deletion, execution, and file operations.
+"""
+
 import asyncio
 import logging
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta, timezone
+
 from app.config import settings
 from app.models import (
     Ship,
@@ -13,25 +20,31 @@ from app.models import (
     UploadFileResponse,
 )
 from app.database import db_service
-from app.services.docker_service import docker_service
+from app.drivers import get_driver
+from app.services.ship.http_client import (
+    wait_for_ship_ready,
+    forward_request_to_ship,
+    upload_file_to_ship,
+    download_file_from_ship,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ShipService:
-    """Service for managing Ship lifecycle and operations"""
+    """Service for managing Ship lifecycle and operations."""
 
     def __init__(self):
         # Track cleanup tasks for each ship to enable cancellation
         self._cleanup_tasks: Dict[str, asyncio.Task] = {}
 
     async def create_ship(self, request: CreateShipRequest, session_id: str) -> Ship:
-        """Create a new ship or reuse an existing one for the session"""
+        """Create a new ship or reuse an existing one for the session."""
         # First, check if this session already has an active running ship
         active_ship = await db_service.find_active_ship_for_session(session_id)
         if active_ship:
             # Verify that the container actually exists and is running
-            if active_ship.container_id and await docker_service.is_container_running(
+            if active_ship.container_id and await get_driver().is_container_running(
                 active_ship.container_id
             ):
                 # Update last activity and return the existing active ship
@@ -52,7 +65,7 @@ class ShipService:
 
         # Second, check if this session has a stopped ship with existing data
         stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
-        if stopped_ship and docker_service.ship_data_exists(stopped_ship.id):
+        if stopped_ship and get_driver().ship_data_exists(stopped_ship.id):
             # Restore the stopped ship
             logger.info(
                 f"Restoring stopped ship {stopped_ship.id} for session {session_id}"
@@ -66,7 +79,7 @@ class ShipService:
             # Verify that the container actually exists and is running
             if (
                 not available_ship.container_id
-                or not await docker_service.is_container_running(
+                or not await get_driver().is_container_running(
                     available_ship.container_id
                 )
             ):
@@ -127,13 +140,13 @@ class ShipService:
 
         try:
             # Create container
-            container_info = await docker_service.create_ship_container(
+            container_info = await get_driver().create_ship_container(
                 ship, request.spec
             )
 
             # Update ship with container info
-            ship.container_id = container_info["container_id"]
-            ship.ip_address = container_info["ip_address"]
+            ship.container_id = container_info.container_id
+            ship.ip_address = container_info.ip_address
             ship = await db_service.update_ship(ship)
 
             # Wait for ship to be ready
@@ -143,13 +156,13 @@ class ShipService:
                 raise RuntimeError("Ship has no IP address")
 
             logger.info(f"Waiting for ship {ship.id} to become ready...")
-            is_ready = await self._wait_for_ship_ready(ship.ip_address)
+            is_ready = await wait_for_ship_ready(ship.ip_address)
 
             if not is_ready:
                 # Ship failed to become ready, cleanup
                 logger.error(f"Ship {ship.id} failed health check, cleaning up")
                 if ship.container_id:
-                    await docker_service.stop_ship_container(ship.container_id)
+                    await get_driver().stop_ship_container(ship.container_id)
                 await db_service.delete_ship(ship.id)
                 raise RuntimeError(
                     f"Ship failed to become ready within {settings.ship_health_check_timeout} seconds"
@@ -179,7 +192,7 @@ class ShipService:
             raise
 
     async def get_ship(self, ship_id: str) -> Optional[Ship]:
-        """Get ship by ID"""
+        """Get ship by ID."""
         ship = await db_service.get_ship(ship_id)
         if ship:
             # Calculate and set the actual expiration time based on all sessions
@@ -187,7 +200,7 @@ class ShipService:
         return ship
 
     async def delete_ship(self, ship_id: str) -> bool:
-        """Delete ship"""
+        """Delete ship."""
         ship = await db_service.get_ship(ship_id)
         if not ship:
             return False
@@ -202,7 +215,7 @@ class ShipService:
         # Stop container if exists
         if ship.container_id:
             try:
-                await docker_service.stop_ship_container(ship.container_id)
+                await get_driver().stop_ship_container(ship.container_id)
             except Exception as e:
                 logger.error(f"Failed to stop container for ship {ship_id}: {e}")
 
@@ -210,7 +223,7 @@ class ShipService:
         return await db_service.delete_ship(ship_id)
 
     async def extend_ttl(self, ship_id: str, new_ttl: int) -> Optional[Ship]:
-        """Extend ship TTL"""
+        """Extend ship TTL."""
         ship = await db_service.get_ship(ship_id)
         if not ship or ship.status == 0:
             return None
@@ -226,7 +239,7 @@ class ShipService:
     async def execute_operation(
         self, ship_id: str, request: ExecRequest, session_id: str
     ) -> ExecResponse:
-        """Execute operation on ship"""
+        """Execute operation on ship."""
         ship = await db_service.get_ship(ship_id)
         if not ship or ship.status == 0:
             return ExecResponse(success=False, error="Ship not found or not running")
@@ -245,7 +258,7 @@ class ShipService:
         await db_service.update_session_activity(session_id, ship_id)
 
         # Forward request to ship container
-        result = await self._forward_to_ship(ship.ip_address, request, session_id)
+        result = await forward_request_to_ship(ship.ip_address, request, session_id)
 
         # Extend TTL after successful operation
         if result.success:
@@ -254,15 +267,15 @@ class ShipService:
         return result
 
     async def get_logs(self, ship_id: str) -> str:
-        """Get ship container logs"""
+        """Get ship container logs."""
         ship = await db_service.get_ship(ship_id)
         if not ship or not ship.container_id:
             return ""
 
-        return await docker_service.get_container_logs(ship.container_id)
+        return await get_driver().get_container_logs(ship.container_id)
 
     async def list_active_ships(self) -> List[Ship]:
-        """List all active ships"""
+        """List all active ships."""
         ships = await db_service.list_active_ships()
         # Calculate and set the actual expiration time for each ship
         for ship in ships:
@@ -272,7 +285,7 @@ class ShipService:
     async def upload_file(
         self, ship_id: str, file_content: bytes, file_path: str, session_id: str
     ) -> UploadFileResponse:
-        """Upload file to ship container"""
+        """Upload file to ship container."""
         # Check file size limit
         if len(file_content) > settings.max_upload_size:
             return UploadFileResponse(
@@ -309,7 +322,7 @@ class ShipService:
         await db_service.update_session_activity(session_id, ship_id)
 
         # Forward file upload to ship container
-        result = await self._upload_file_to_ship(
+        result = await upload_file_to_ship(
             ship.ip_address, file_content, file_path, session_id
         )
 
@@ -322,7 +335,7 @@ class ShipService:
     async def download_file(
         self, ship_id: str, file_path: str, session_id: str
     ) -> tuple[bool, bytes, str]:
-        """Download file from ship container
+        """Download file from ship container.
 
         Returns:
             tuple: (success, file_content, error_message)
@@ -343,7 +356,7 @@ class ShipService:
         await db_service.update_session_activity(session_id, ship_id)
 
         # Forward file download request to ship container
-        success, file_content, error = await self._download_file_from_ship(
+        success, file_content, error = await download_file_from_ship(
             ship.ip_address, file_path, session_id
         )
 
@@ -354,7 +367,7 @@ class ShipService:
         return (success, file_content, error)
 
     async def _extend_ttl_after_operation(self, ship_id: str, session_id: str):
-        """Extend ship TTL after an operation by refreshing the current session's expiration time"""
+        """Extend ship TTL after an operation by refreshing the current session's expiration time."""
         # Get the session information
         session_ship = await db_service.get_session_ship(session_id, ship_id)
         if not session_ship:
@@ -376,7 +389,7 @@ class ShipService:
         )
 
     async def _recalculate_and_schedule_cleanup(self, ship_id: str):
-        """Recalculate ship's TTL based on all sessions' expiration times and reschedule cleanup"""
+        """Recalculate ship's TTL based on all sessions' expiration times and reschedule cleanup."""
         # Get all sessions for this ship
         all_sessions = await db_service.get_sessions_for_ship(ship_id)
 
@@ -413,7 +426,7 @@ class ShipService:
         )
 
     async def _set_ship_expires_at(self, ship: Ship):
-        """Calculate and set ship's expiration time based on all sessions"""
+        """Calculate and set ship's expiration time based on all sessions."""
         if ship.status == 0:
             # Stopped ships don't have an expiration time
             ship.expires_at = None
@@ -437,7 +450,7 @@ class ShipService:
         ship.expires_at = max_expires_at
 
     async def _wait_for_available_slot(self):
-        """Wait for an available ship slot"""
+        """Wait for an available ship slot."""
         max_wait_time = 300  # 5 minutes
         check_interval = 5  # 5 seconds
         waited = 0
@@ -453,7 +466,7 @@ class ShipService:
         raise TimeoutError("Timeout waiting for available ship slot")
 
     async def _schedule_cleanup(self, ship_id: str, ttl: int):
-        """Schedule ship cleanup after TTL expires"""
+        """Schedule ship cleanup after TTL expires."""
         # Cancel any existing cleanup task for this ship
         if ship_id in self._cleanup_tasks:
             old_task = self._cleanup_tasks[ship_id]
@@ -467,7 +480,7 @@ class ShipService:
         return task
 
     async def _cleanup_ship_after_delay(self, ship_id: str, ttl: int):
-        """Perform ship cleanup after TTL delay"""
+        """Perform ship cleanup after TTL delay."""
         try:
             await asyncio.sleep(ttl)
 
@@ -479,7 +492,7 @@ class ShipService:
 
                 # Stop container (but keep ship_data directory)
                 if ship.container_id:
-                    await docker_service.stop_ship_container(ship.container_id)
+                    await get_driver().stop_ship_container(ship.container_id)
 
                 logger.info(f"Ship {ship_id} cleaned up after TTL expiration")
         except asyncio.CancelledError:
@@ -495,16 +508,16 @@ class ShipService:
     async def _restore_ship(
         self, ship: Ship, request: CreateShipRequest, session_id: str
     ) -> Ship:
-        """Restore a stopped ship by recreating its container"""
+        """Restore a stopped ship by recreating its container."""
         try:
             # Recreate container with existing ship data
-            container_info = await docker_service.create_ship_container(
+            container_info = await get_driver().create_ship_container(
                 ship, request.spec
             )
 
             # Update ship with new container info
-            ship.container_id = container_info["container_id"]
-            ship.ip_address = container_info["ip_address"]
+            ship.container_id = container_info.container_id
+            ship.ip_address = container_info.ip_address
             ship.status = 1  # Mark as running
             ship.ttl = request.ttl  # Update TTL
             ship = await db_service.update_ship(ship)
@@ -515,13 +528,13 @@ class ShipService:
                 raise RuntimeError("Ship has no IP address")
 
             logger.info(f"Waiting for restored ship {ship.id} to become ready...")
-            is_ready = await self._wait_for_ship_ready(ship.ip_address)
+            is_ready = await wait_for_ship_ready(ship.ip_address)
 
             if not is_ready:
                 # Ship failed to become ready, cleanup
                 logger.error(f"Restored ship {ship.id} failed health check")
                 if ship.container_id:
-                    await docker_service.stop_ship_container(ship.container_id)
+                    await get_driver().stop_ship_container(ship.container_id)
                 ship.status = 0
                 await db_service.update_ship(ship)
                 raise RuntimeError(
@@ -556,159 +569,6 @@ class ShipService:
             await db_service.update_ship(ship)
             logger.error(f"Failed to restore ship {ship.id}: {e}")
             raise
-
-    async def _forward_to_ship(
-        self, ship_ip: str, request: ExecRequest, session_id: str
-    ) -> ExecResponse:
-        """Forward request to ship container"""
-        url = f"http://{ship_ip}:8123/{request.type}"
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            headers = {"X-SESSION-ID": session_id}
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    url, json=request.payload or {}, headers=headers
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return ExecResponse(success=True, data=data)
-                    else:
-                        error_text = await response.text()
-                        return ExecResponse(
-                            success=False,
-                            error=f"Ship returned {response.status}: {error_text}",
-                        )
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Failed to forward request to ship {ship_ip}: {e}")
-            return ExecResponse(success=False, error=f"Connection error: {str(e)}")
-        except asyncio.TimeoutError:
-            return ExecResponse(success=False, error="Request timeout")
-        except Exception as e:
-            logger.error(f"Unexpected error forwarding to ship {ship_ip}: {e}")
-            return ExecResponse(success=False, error=f"Internal error: {str(e)}")
-
-    async def _wait_for_ship_ready(self, ship_ip: str) -> bool:
-        """Wait for ship to be ready by polling /health endpoint"""
-        health_url = f"http://{ship_ip}:8123/health"
-        max_wait_time = settings.ship_health_check_timeout
-        check_interval = settings.ship_health_check_interval
-        waited = 0
-
-        logger.info(f"Starting health check for ship at {ship_ip}")
-
-        while waited < max_wait_time:
-            try:
-                timeout = aiohttp.ClientTimeout(total=5)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(health_url) as response:
-                        if response.status == 200:
-                            logger.info(f"Ship at {ship_ip} is ready after {waited}s")
-                            return True
-            except Exception as e:
-                logger.debug(f"Health check failed for {ship_ip}: {e}")
-
-            await asyncio.sleep(check_interval)
-            waited += check_interval
-
-        logger.error(
-            f"Ship at {ship_ip} failed to become ready within {max_wait_time}s"
-        )
-        return False
-
-    async def _upload_file_to_ship(
-        self, ship_ip: str, file_content: bytes, file_path: str, session_id: str
-    ) -> UploadFileResponse:
-        """Upload file to ship container via HTTP API using multipart/form-data"""
-        url = f"http://{ship_ip}:8123/upload"
-
-        try:
-            # Create multipart form data
-            data = aiohttp.FormData()
-            data.add_field(
-                "file",
-                file_content,
-                filename="upload",
-                content_type="application/octet-stream",
-            )
-            data.add_field("file_path", file_path)
-
-            timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file upload
-            headers = {"X-SESSION-ID": session_id}
-
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, data=data, headers=headers) as response:
-                    if response.status == 200:
-                        resp = await response.json()
-                        return UploadFileResponse(
-                            success=True,
-                            message="File uploaded successfully",
-                            file_path=resp.get("file_path", "unknown"),
-                        )
-                    else:
-                        error_text = await response.text()
-                        return UploadFileResponse(
-                            success=False,
-                            error=f"Ship returned {response.status}: {error_text}",
-                            message="File upload failed",
-                        )
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Failed to upload file to ship {ship_ip}: {e}")
-            return UploadFileResponse(
-                success=False,
-                error=f"Connection error: {str(e)}",
-                message="File upload failed",
-            )
-        except asyncio.TimeoutError:
-            return UploadFileResponse(
-                success=False, error="File upload timeout", message="File upload failed"
-            )
-        except Exception as e:
-            logger.error(f"Unexpected error uploading file to ship {ship_ip}: {e}")
-            return UploadFileResponse(
-                success=False,
-                error=f"Internal error: {str(e)}",
-                message="File upload failed",
-            )
-
-    async def _download_file_from_ship(
-        self, ship_ip: str, file_path: str, session_id: str
-    ) -> tuple[bool, bytes, str]:
-        """Download file from ship container via HTTP API
-
-        Returns:
-            tuple: (success, file_content, error_message)
-        """
-        url = f"http://{ship_ip}:8123/download"
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file download
-            headers = {"X-SESSION-ID": session_id}
-            params = {"file_path": file_path}
-
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, params=params, headers=headers) as response:
-                    if response.status == 200:
-                        file_content = await response.read()
-                        return (True, file_content, "")
-                    else:
-                        error_text = await response.text()
-                        return (
-                            False,
-                            b"",
-                            f"Ship returned {response.status}: {error_text}",
-                        )
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Failed to download file from ship {ship_ip}: {e}")
-            return (False, b"", f"Connection error: {str(e)}")
-        except asyncio.TimeoutError:
-            return (False, b"", "File download timeout")
-        except Exception as e:
-            logger.error(f"Unexpected error downloading file from ship {ship_ip}: {e}")
-            return (False, b"", f"Internal error: {str(e)}")
 
 
 # Global ship service instance

@@ -97,10 +97,81 @@ Authorization: Bearer <your-access-token>
 - `DATABASE_URL`: SQLite数据库文件路径
 - `MAX_SHIP_NUM`: 最大Ship数量
 - `BEHAVIOR_AFTER_MAX_SHIP`: 达到最大Ship数量后的行为（reject/wait）
+- `CONTAINER_DRIVER`: 容器运行时驱动（docker/docker-host/containerd/podman，默认docker-host）
 - `DOCKER_IMAGE`: Ship容器镜像名称
+- `SHIP_CONTAINER_PORT`: Ship容器内部端口（默认8123）
 - `SHIP_HEALTH_CHECK_TIMEOUT`: Ship健康检查最大超时时间（秒，默认60）
 - `SHIP_HEALTH_CHECK_INTERVAL`: Ship健康检查间隔时间（秒，默认2）
 - `DOCKER_NETWORK`: Docker网络名称
+
+## 容器驱动架构
+
+Bay 使用可插拔的驱动架构来支持不同的容器运行时和部署模式：
+
+### 支持的驱动
+
+| 驱动 | 状态 | 说明 | 网络模式 |
+|------|------|------|----------|
+| **docker** | ✅ 可用 | Bay 运行在 Docker 容器内 | 使用容器内部IP (如 `172.18.0.2:8123`) |
+| **docker-host** | ✅ 可用 (默认) | Bay 运行在宿主机上 | 使用 localhost + 端口映射 (如 `127.0.0.1:39314`) |
+| **containerd** | 🚧 计划中 | 使用 containerd 运行时 | - |
+| **podman** | 🚧 计划中 | 使用 Podman 运行时 | - |
+
+### 选择正确的驱动
+
+- **docker-host** (推荐): 当 Bay 直接运行在宿主机上时使用。这种模式通过端口映射访问 Ship 容器，解决了宿主机无法直接访问容器内部 IP 的问题。
+
+- **docker**: 当 Bay 运行在 Docker 容器内时使用（如通过 docker-compose 部署）。这种模式可以直接使用容器网络 IP 进行通信。
+
+### 驱动架构图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Bay Service                             │
+├─────────────────────────────────────────────────────────────────┤
+│  ShipService                                                    │
+│    ├── url_builder.py    (构建 Ship URL，处理不同地址格式)       │
+│    ├── http_client.py    (HTTP 通信：健康检查、exec、文件传输)   │
+│    └── service.py        (Ship 生命周期管理)                    │
+├─────────────────────────────────────────────────────────────────┤
+│  ContainerDriver (抽象接口)                                      │
+│    ├── DockerDriver       (容器内部署，返回容器IP)               │
+│    ├── DockerHostDriver   (宿主机部署，返回 localhost:port)      │
+│    ├── ContainerdDriver   (计划中)                              │
+│    └── PodmanDriver       (计划中)                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 自定义驱动
+
+要实现自定义容器驱动，需要：
+
+1. 在 `app/drivers/` 目录下创建新的驱动文件
+2. 继承 [`ContainerDriver`](app/drivers/base.py) 抽象基类
+3. 实现所有必需的方法：
+   - `initialize()`: 初始化驱动连接
+   - `close()`: 关闭驱动连接
+   - `create_ship_container()`: 创建容器，返回 `ContainerInfo`
+   - `stop_ship_container()`: 停止并删除容器
+   - `ship_data_exists()`: 检查数据目录是否存在
+   - `get_container_logs()`: 获取容器日志
+   - `is_container_running()`: 检查容器运行状态
+4. 在 [`factory.py`](app/drivers/factory.py) 中注册驱动
+
+### ContainerInfo 数据结构
+
+驱动返回的容器信息必须符合 `ContainerInfo` 模型：
+
+```python
+@dataclass
+class ContainerInfo:
+    container_id: str       # 容器 ID
+    ip_address: str         # 访问地址 (IP 或 IP:port)
+```
+
+**注意**: `ip_address` 字段的格式取决于驱动类型：
+- `docker` 驱动: 返回纯 IP 地址，如 `172.18.0.2`
+- `docker-host` 驱动: 返回 `IP:port` 格式，如 `127.0.0.1:39314`
 
 ## 开发
 

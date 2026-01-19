@@ -13,6 +13,7 @@ dependencies = [
     "aiohttp",
     "docker",
     "aiodocker",
+    "podman>=5.0.0",
     "aiosqlite",
     "alembic",
     "greenlet>=3.2.4",
