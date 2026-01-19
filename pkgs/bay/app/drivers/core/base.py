@@ -12,6 +12,29 @@ from typing import Optional
 from app.models import Ship, ShipSpec
 
 
+class ContainerIPAddressError(Exception):
+    """
+    Exception raised when a container's IP address cannot be determined.
+
+    This typically occurs when:
+    - Port mapping configuration is incorrect (for host mode drivers)
+    - Network configuration issues prevent IP assignment
+    - Container failed to properly connect to the network
+    """
+
+    def __init__(self, container_id: str, ship_id: str, details: str = ""):
+        self.container_id = container_id
+        self.ship_id = ship_id
+        self.details = details
+        message = (
+            f"Failed to obtain IP address for container {container_id} "
+            f"(ship {ship_id})"
+        )
+        if details:
+            message += f": {details}"
+        super().__init__(message)
+
+
 @dataclass
 class ContainerInfo:
     """Information about a created container."""

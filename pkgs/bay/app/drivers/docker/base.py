@@ -13,7 +13,7 @@ from aiodocker.exceptions import DockerError
 
 from app.config import settings
 from app.models import Ship, ShipSpec
-from app.drivers.core.base import ContainerDriver, ContainerInfo
+from app.drivers.core.base import ContainerDriver, ContainerInfo, ContainerIPAddressError
 from app.drivers.core.utils import parse_memory_string, ensure_ship_dirs, ship_data_exists
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,44 @@ class BaseDockerDriver(ContainerDriver):
 
             # Get IP address (implementation varies by driver mode)
             ip_address = self._get_ip_address(container_info, ship.id)
+
+            # Validate IP address - fail fast if not available
+            if not ip_address:
+                # Log detailed diagnostic information
+                network_settings = container_info.get("NetworkSettings", {})
+                ports = network_settings.get("Ports", {})
+                networks = network_settings.get("Networks", {})
+                logger.error(
+                    "Failed to obtain IP address for ship %s (container %s). "
+                    "NetworkSettings: Ports=%s, Networks=%s, IPAddress=%s",
+                    ship.id,
+                    container.id,
+                    ports,
+                    list(networks.keys()) if networks else None,
+                    network_settings.get("IPAddress"),
+                )
+                # Stop the container since we can't use it
+                try:
+                    await container.stop()
+                    await container.delete()
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Failed to cleanup container %s after IP address error: %s",
+                        container.id,
+                        cleanup_error,
+                    )
+                raise ContainerIPAddressError(
+                    container_id=container.id,
+                    ship_id=ship.id,
+                    details="Network settings may be misconfigured or port mapping failed",
+                )
+
+            logger.debug(
+                "Container %s for ship %s obtained IP address: %s",
+                container.id,
+                ship.id,
+                ip_address,
+            )
 
             return ContainerInfo(
                 container_id=container.id,
