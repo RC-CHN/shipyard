@@ -2,257 +2,34 @@
 Docker container driver implementation.
 
 This module implements the ContainerDriver interface using Docker (via aiodocker).
+Uses Docker network internal IPs for container-to-container communication.
 """
 
-import os
-import aiodocker
-from aiodocker.exceptions import DockerError
-from typing import Optional, Dict, Any
 import logging
 
-from app.config import settings
-from app.models import Ship, ShipSpec
-from app.drivers.core.base import ContainerDriver, ContainerInfo
+from app.drivers.docker.base import BaseDockerDriver
 
 logger = logging.getLogger(__name__)
 
 
-class DockerDriver(ContainerDriver):
+class DockerDriver(BaseDockerDriver):
     """
     Docker implementation of the ContainerDriver interface.
 
     Uses aiodocker for async Docker operations. Requires access to the
     Docker socket (typically /var/run/docker.sock).
+
+    This driver is designed for when Bay runs inside a Docker container
+    and can access other containers via Docker network IPs.
+
+    Use this driver when:
+        - Bay is running inside a Docker container
+        - Bay can access Docker's internal network IPs
+
+    Configuration:
+        - Set CONTAINER_DRIVER=docker
     """
 
-    def __init__(self):
-        self.client: Optional[aiodocker.Docker] = None
-
-    async def initialize(self) -> None:
-        """Initialize Docker client."""
-        try:
-            self.client = aiodocker.Docker()
-            # Test connection
-            await self.client.version()
-            logger.info("Docker driver initialized successfully")
-        except DockerError as e:
-            logger.error(f"Failed to initialize Docker driver: {e}")
-            raise
-
-    async def close(self) -> None:
-        """Close Docker client."""
-        if self.client:
-            await self.client.close()
-
-    async def create_ship_container(
-        self, ship: Ship, spec: Optional[ShipSpec] = None
-    ) -> ContainerInfo:
-        """Create and start a ship container using Docker."""
-        if not self.client:
-            await self.initialize()
-
-        assert self.client is not None  # For type checker
-
-        container_config = self._build_container_config(ship, spec)
-
-        try:
-            # Create container
-            container = await self.client.containers.create_or_replace(
-                name=container_config["name"], config=container_config["config"]
-            )
-
-            # Start container
-            await container.start()
-
-            # Get container info
-            container_info = await container.show()
-
-            # Get container IP address
-            ip_address = None
-            network_settings = container_info.get("NetworkSettings", {})
-
-            if (
-                settings.docker_network
-                and settings.docker_network in network_settings.get("Networks", {})
-            ):
-                ip_address = network_settings["Networks"][settings.docker_network].get(
-                    "IPAddress"
-                )
-            else:
-                ip_address = network_settings.get("IPAddress")
-
-            return ContainerInfo(
-                container_id=container.id,
-                ip_address=ip_address,
-                status=container_info.get("State", {}).get("Status", "unknown"),
-            )
-
-        except DockerError as e:
-            logger.error(f"Failed to create container for ship {ship.id}: {e}")
-            raise
-
-    async def stop_ship_container(self, container_id: str) -> bool:
-        """Stop and remove ship container."""
-        if not self.client:
-            await self.initialize()
-
-        assert self.client is not None  # For type checker
-
-        try:
-            # Get container
-            container = await self.client.containers.get(container_id)
-
-            # Stop container
-            await container.stop()
-
-            # Remove container
-            await container.delete()
-
-            return True
-
-        except DockerError as e:
-            if "No such container" in str(e):
-                logger.warning(f"Container {container_id} not found")
-                return True  # Already removed
-            logger.error(f"Failed to stop container {container_id}: {e}")
-            return False
-
-    def ship_data_exists(self, ship_id: str) -> bool:
-        """Check if ship data directory exists."""
-        ship_data_dir = os.path.expanduser(f"{settings.ship_data_dir}/{ship_id}")
-        home_dir = f"{ship_data_dir}/home"
-        metadata_dir = f"{ship_data_dir}/metadata"
-
-        # Check if both directories exist
-        return os.path.exists(home_dir) and os.path.exists(metadata_dir)
-
-    async def get_container_logs(self, container_id: str) -> str:
-        """Get container logs."""
-        if not self.client:
-            await self.initialize()
-
-        assert self.client is not None  # For type checker
-
-        try:
-            # Get container
-            container = await self.client.containers.get(container_id)
-
-            # Get logs
-            logs_stream = await container.log(stdout=True, stderr=True)
-            logs = "".join([line for line in logs_stream])
-
-            return logs
-
-        except DockerError as e:
-            if "No such container" in str(e):
-                logger.warning(f"Container {container_id} not found")
-                return ""
-            logger.error(f"Failed to get logs for container {container_id}: {e}")
-            return ""
-
-    async def is_container_running(self, container_id: str) -> bool:
-        """Check if container is running."""
-        if not self.client:
-            await self.initialize()
-
-        assert self.client is not None  # For type checker
-
-        try:
-            # Get container
-            container = await self.client.containers.get(container_id)
-
-            # Get container info
-            container_info = await container.show()
-            return container_info.get("State", {}).get("Status") == "running"
-
-        except DockerError as e:
-            if "No such container" in str(e):
-                return False
-            logger.error(f"Failed to check container {container_id} status: {e}")
-            return False
-
-    def _build_container_config(
-        self, ship: Ship, spec: Optional[ShipSpec] = None
-    ) -> Dict[str, Any]:
-        """Build container configuration for aiodocker."""
-        # Prepare host paths for volume mounts
-        ship_data_dir = os.path.expanduser(f"{settings.ship_data_dir}/{ship.id}")
-        home_dir = f"{ship_data_dir}/home"
-        metadata_dir = f"{ship_data_dir}/metadata"
-
-        # Create directories if they don't exist
-        os.makedirs(home_dir, exist_ok=True)
-        os.makedirs(metadata_dir, exist_ok=True)
-
-        # Set permissions to allow container to manage users and directories
-        # Using 0o777 to ensure ship container (running as root) can create/manage user directories
-        try:
-            os.chmod(home_dir, 0o777)
-            os.chmod(metadata_dir, 0o777)
-        except Exception as e:
-            logger.error(
-                f"Failed to set permissions for ship {ship.id} directories: {e}"
-            )
-            raise
-
-        # Host configuration for resource limits
-        port_key = f"{settings.ship_container_port}/tcp"
-        host_config: Dict[str, Any] = {
-            "RestartPolicy": {"Name": "no"},
-            "PortBindings": {port_key: [{"HostPort": ""}]},
-            "Binds": [
-                f"{home_dir}:/home",
-                f"{metadata_dir}:/app/metadata",
-            ],
-        }
-
-        # Apply spec if provided
-        if spec:
-            if spec.cpus:
-                host_config["CpuQuota"] = int(spec.cpus * 100000)
-                host_config["CpuPeriod"] = 100000
-
-            if spec.memory:
-                host_config["Memory"] = self._parse_memory_string(spec.memory)
-
-        # Container configuration
-        config: Dict[str, Any] = {
-            "Image": settings.docker_image,
-            "Env": [f"SHIP_ID={ship.id}", f"TTL={ship.ttl}"],
-            "Labels": {"ship_id": ship.id, "created_by": "bay"},
-            "ExposedPorts": {port_key: {}},
-            "HostConfig": host_config,
-        }
-
-        # Add network if configured
-        if settings.docker_network:
-            config["NetworkingConfig"] = {
-                "EndpointsConfig": {settings.docker_network: {}}
-            }
-
-        return {"name": f"ship-{ship.id}", "config": config}
-
-    def _parse_memory_string(self, memory_str: str) -> int:
-        """Parse memory string (e.g., '512m', '1g') to bytes."""
-        memory_str = memory_str.lower().strip()
-
-        if memory_str.endswith("k") or memory_str.endswith("kb"):
-            return (
-                int(memory_str[:-1] if memory_str.endswith("k") else memory_str[:-2])
-                * 1024
-            )
-        if memory_str.endswith("m") or memory_str.endswith("mb"):
-            return (
-                int(memory_str[:-1] if memory_str.endswith("m") else memory_str[:-2])
-                * 1024
-                * 1024
-            )
-        if memory_str.endswith("g") or memory_str.endswith("gb"):
-            return (
-                int(memory_str[:-1] if memory_str.endswith("g") else memory_str[:-2])
-                * 1024
-                * 1024
-                * 1024
-            )
-        # Assume bytes if no suffix
-        return int(memory_str)
+    # This driver uses the default implementation from BaseDockerDriver
+    # which returns Docker network IPs via _get_ip_address()
+    pass
