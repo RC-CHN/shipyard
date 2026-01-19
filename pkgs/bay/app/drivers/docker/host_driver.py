@@ -82,14 +82,15 @@ class DockerHostDriver(ContainerDriver):
             # Get container info (need to refresh after start to get port mappings)
             container_info = await container.show()
 
-            # Get the mapped host port for 8123
+            # Get the mapped host port
             # In host mode, we use localhost:mapped_port instead of container IP
             ip_address = None
             network_settings = container_info.get("NetworkSettings", {})
             ports = network_settings.get("Ports", {})
 
-            if "8123/tcp" in ports and ports["8123/tcp"]:
-                host_port = ports["8123/tcp"][0].get("HostPort")
+            port_key = f"{settings.ship_container_port}/tcp"
+            if port_key in ports and ports[port_key]:
+                host_port = ports[port_key][0].get("HostPort")
                 if host_port:
                     # Use localhost with the mapped port
                     ip_address = f"127.0.0.1:{host_port}"
@@ -226,9 +227,10 @@ class DockerHostDriver(ContainerDriver):
 
         # Host configuration for resource limits
         # For host mode, we MUST have port binding to access the container
+        port_key = f"{settings.ship_container_port}/tcp"
         host_config: Dict[str, Any] = {
             "RestartPolicy": {"Name": "no"},
-            "PortBindings": {"8123/tcp": [{"HostPort": ""}]},
+            "PortBindings": {port_key: [{"HostPort": ""}]},
             "Binds": [
                 f"{home_dir}:/home",
                 f"{metadata_dir}:/app/metadata",
@@ -249,7 +251,7 @@ class DockerHostDriver(ContainerDriver):
             "Image": settings.docker_image,
             "Env": [f"SHIP_ID={ship.id}", f"TTL={ship.ttl}"],
             "Labels": {"ship_id": ship.id, "created_by": "bay"},
-            "ExposedPorts": {"8123/tcp": {}},
+            "ExposedPorts": {port_key: {}},
             "HostConfig": host_config,
         }
 

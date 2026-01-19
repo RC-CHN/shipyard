@@ -94,8 +94,9 @@ class PodmanHostDriver(ContainerDriver):
             ip_address: Optional[str] = None
             network_settings = container.attrs.get("NetworkSettings", {})
             ports = network_settings.get("Ports", {})
-            if "8123/tcp" in ports and ports["8123/tcp"]:
-                host_port = ports["8123/tcp"][0].get("HostPort")
+            port_key = f"{settings.ship_container_port}/tcp"
+            if port_key in ports and ports[port_key]:
+                host_port = ports[port_key][0].get("HostPort")
                 if host_port:
                     ip_address = f"127.0.0.1:{host_port}"
                     logger.info(f"Ship {ship.id} accessible at {ip_address}")
@@ -220,12 +221,13 @@ class PodmanHostDriver(ContainerDriver):
             )
             raise
 
+        port_key = f"{settings.ship_container_port}/tcp"
         config: Dict[str, Any] = {
             "image": settings.docker_image,
             "name": f"ship-{ship.id}",
             "environment": {"SHIP_ID": ship.id, "TTL": str(ship.ttl)},
             "labels": {"ship_id": ship.id, "created_by": "bay"},
-            "ports": {"8123/tcp": None},
+            "ports": {port_key: None},
             "volumes": {
                 home_dir: {"bind": "/home", "mode": "rw"},
                 metadata_dir: {"bind": "/app/metadata", "mode": "rw"},

@@ -196,9 +196,10 @@ class DockerDriver(ContainerDriver):
             raise
 
         # Host configuration for resource limits
+        port_key = f"{settings.ship_container_port}/tcp"
         host_config: Dict[str, Any] = {
             "RestartPolicy": {"Name": "no"},
-            "PortBindings": {"8123/tcp": [{"HostPort": ""}]},
+            "PortBindings": {port_key: [{"HostPort": ""}]},
             "Binds": [
                 f"{home_dir}:/home",
                 f"{metadata_dir}:/app/metadata",
@@ -219,7 +220,7 @@ class DockerDriver(ContainerDriver):
             "Image": settings.docker_image,
             "Env": [f"SHIP_ID={ship.id}", f"TTL={ship.ttl}"],
             "Labels": {"ship_id": ship.id, "created_by": "bay"},
-            "ExposedPorts": {"8123/tcp": {}},
+            "ExposedPorts": {port_key: {}},
             "HostConfig": host_config,
         }
 

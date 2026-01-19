@@ -212,12 +212,13 @@ class PodmanDriver(ContainerDriver):
             )
             raise
 
+        port_key = f"{settings.ship_container_port}/tcp"
         config: Dict[str, Any] = {
             "image": settings.docker_image,
             "name": f"ship-{ship.id}",
             "environment": {"SHIP_ID": ship.id, "TTL": str(ship.ttl)},
             "labels": {"ship_id": ship.id, "created_by": "bay"},
-            "ports": {"8123/tcp": None},  # Random port
+            "ports": {port_key: None},  # Random port
             "volumes": {
                 home_dir: {"bind": "/home", "mode": "rw"},
                 metadata_dir: {"bind": "/app/metadata", "mode": "rw"},

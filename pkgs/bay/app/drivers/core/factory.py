@@ -24,8 +24,9 @@ def create_driver(driver_type: str) -> ContainerDriver:
         driver_type: The type of driver to create:
             - "docker": For Bay running inside a Docker container (uses container IPs)
             - "docker-host": For Bay running on the host machine (uses port mapping)
+            - "podman": For Bay running with Podman inside a container (uses container IPs)
+            - "podman-host": For Bay running on the host machine with Podman (uses port mapping)
             - "containerd": For containerd runtime (not yet implemented)
-            - "podman": For Podman runtime (not yet implemented)
 
     Returns:
         A ContainerDriver instance
@@ -57,7 +58,7 @@ def create_driver(driver_type: str) -> ContainerDriver:
         )
     raise ValueError(
         f"Unknown driver type: {driver_type}. "
-        f"Supported types: docker, docker-host, containerd, podman"
+        f"Supported types: docker, docker-host, podman, podman-host, containerd"
     )
 
 

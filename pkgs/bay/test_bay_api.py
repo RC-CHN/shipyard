@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import time
 import uuid
@@ -18,9 +19,9 @@ from typing import Any, Dict, Optional
 
 import requests
 
-# 配置
-BAY_URL = "http://localhost:8156"
-ACCESS_TOKEN = "secret-token"  # 默认 token
+# 配置 - 支持从环境变量覆盖
+BAY_URL = os.getenv("BAY_URL", "http://localhost:8156")
+ACCESS_TOKEN = os.getenv("BAY_ACCESS_TOKEN", "secret-token")
 SESSION_ID = str(uuid.uuid4())
 
 AUTH_HEADERS = {
