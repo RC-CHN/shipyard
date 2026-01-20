@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bay
+  namespace: shipyard
+  labels:
+    app: bay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bay
+  template:
+    metadata:
+      labels:
+        app: bay
+    spec:
+      serviceAccountName: bay-sa
+      containers:
+        - name: bay
+          image: bay:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: bay-config
+          env:
+            # Sensitive data should be in a Secret, but for simplicity:
+            - name: ACCESS_TOKEN
+              value: "secret-token"
+          volumeMounts:
+            - name: bay-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: bay-data
+          persistentVolumeClaim:
+            claimName: bay-data-pvc

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bay-service-lb
+  namespace: shipyard
+spec:
+  type: LoadBalancer
+  selector:
+    app: bay
+  ports:
+    - port: 80
+      targetPort: 8000
