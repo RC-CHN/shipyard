@@ -64,5 +64,5 @@ async def get_stat():
         "service": "ship",
         "version": get_version(),
         "status": "running",
-        "author": "AstrBot Team"
+        "author": "AstrBot Team",
     }

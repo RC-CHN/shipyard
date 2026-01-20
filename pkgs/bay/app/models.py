@@ -52,7 +52,7 @@ class SessionShipBase(SQLModel):
     expires_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
-        description="When this session's access to the ship expires"
+        description="When this session's access to the ship expires",
     )
     initial_ttl: int = Field(
         description="Initial TTL in seconds for this session (used for refresh)"

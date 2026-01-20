@@ -251,7 +251,12 @@ def test_create_ship_with_small_memory() -> bool:
             timeout=120,
         )
 
-        if not check_status(resp, 201, "极小内存 Ship 创建成功（说明已被修正）", "极小内存 Ship 创建失败"):
+        if not check_status(
+            resp,
+            201,
+            "极小内存 Ship 创建成功（说明已被修正）",
+            "极小内存 Ship 创建失败",
+        ):
             return False
 
         data = resp.json()

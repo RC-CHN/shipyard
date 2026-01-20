@@ -126,7 +126,7 @@ def _normalize_unit_for_k8s(memory: str) -> str:
     # Convert Docker-style units to K8s binary units
     for suffix, k8s_suffix in _DOCKER_TO_K8S_SUFFIX.items():
         if lower.endswith(suffix):
-            return mem[:-len(suffix)] + k8s_suffix
+            return mem[: -len(suffix)] + k8s_suffix
 
     # No recognized unit suffix, assume bytes - return as-is
     return mem

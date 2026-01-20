@@ -17,7 +17,11 @@ from kubernetes_asyncio.client.rest import ApiException
 
 from app.config import settings
 from app.models import Ship, ShipSpec
-from app.drivers.core.base import ContainerDriver, ContainerInfo, ContainerIPAddressError
+from app.drivers.core.base import (
+    ContainerDriver,
+    ContainerInfo,
+    ContainerIPAddressError,
+)
 from app.drivers.kubernetes.utils import (
     build_pod_manifest,
     build_pvc_manifest,
@@ -83,8 +87,7 @@ class KubernetesDriver(ContainerDriver):
                 kubeconfig = settings.kube_config_path
                 await config.load_kube_config(config_file=kubeconfig)
                 logger.info(
-                    "Loaded kubeconfig from %s",
-                    kubeconfig or "default location"
+                    "Loaded kubeconfig from %s", kubeconfig or "default location"
                 )
 
             # Create and save the ApiClient instance for proper cleanup
@@ -97,7 +100,7 @@ class KubernetesDriver(ContainerDriver):
             self._initialized = True
             logger.info(
                 "KubernetesDriver initialized successfully (namespace: %s)",
-                self.namespace
+                self.namespace,
             )
 
         except Exception as e:
@@ -204,7 +207,9 @@ class KubernetesDriver(ContainerDriver):
 
             logger.info(
                 "Ship %s created successfully: pod=%s, ip=%s",
-                ship.id, pod_name, ip_address
+                ship.id,
+                pod_name,
+                ip_address,
             )
 
             return ContainerInfo(
@@ -215,8 +220,7 @@ class KubernetesDriver(ContainerDriver):
 
         except ApiException as e:
             logger.error(
-                "Failed to create ship %s: %s (status=%s)",
-                ship.id, e.reason, e.status
+                "Failed to create ship %s: %s (status=%s)", ship.id, e.reason, e.status
             )
             raise
         except Exception as e:
@@ -354,10 +358,7 @@ class KubernetesDriver(ContainerDriver):
                 phase = pod.status.phase
                 pod_ip = pod.status.pod_ip
 
-                logger.debug(
-                    "Pod %s status: phase=%s, ip=%s",
-                    pod_name, phase, pod_ip
-                )
+                logger.debug("Pod %s status: phase=%s, ip=%s", pod_name, phase, pod_ip)
 
                 if phase == "Running" and pod_ip:
                     # Check if container is ready
@@ -371,21 +372,20 @@ class KubernetesDriver(ContainerDriver):
                 elif phase in ("Failed", "Succeeded"):
                     logger.error(
                         "Pod %s for ship %s entered terminal phase: %s",
-                        pod_name, ship_id, phase
+                        pod_name,
+                        ship_id,
+                        phase,
                     )
                     return None
 
             except ApiException as e:
-                logger.warning(
-                    "Error checking pod %s status: %s", pod_name, e.reason
-                )
+                logger.warning("Error checking pod %s status: %s", pod_name, e.reason)
 
             await asyncio.sleep(interval)
             elapsed += interval
 
         logger.error(
-            "Timeout waiting for pod %s to be ready (ship %s)",
-            pod_name, ship_id
+            "Timeout waiting for pod %s to be ready (ship %s)", pod_name, ship_id
         )
         return None
 

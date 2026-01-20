@@ -13,8 +13,16 @@ from aiodocker.exceptions import DockerError
 
 from app.config import settings
 from app.models import Ship, ShipSpec
-from app.drivers.core.base import ContainerDriver, ContainerInfo, ContainerIPAddressError
-from app.drivers.core.utils import parse_and_enforce_minimum_memory, ensure_ship_dirs, ship_data_exists
+from app.drivers.core.base import (
+    ContainerDriver,
+    ContainerInfo,
+    ContainerIPAddressError,
+)
+from app.drivers.core.utils import (
+    parse_and_enforce_minimum_memory,
+    ensure_ship_dirs,
+    ship_data_exists,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -274,9 +282,8 @@ class BaseDockerDriver(ContainerDriver):
         # Default implementation: use Docker network IP
         network_settings = container_info.get("NetworkSettings", {})
 
-        if (
-            settings.docker_network
-            and settings.docker_network in network_settings.get("Networks", {})
+        if settings.docker_network and settings.docker_network in network_settings.get(
+            "Networks", {}
         ):
             return network_settings["Networks"][settings.docker_network].get(
                 "IPAddress"

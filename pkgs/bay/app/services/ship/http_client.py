@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 async def wait_for_ship_ready(ship_address: str) -> bool:
     """
     Wait for a Ship to be ready by polling its /health endpoint.
-    
+
     Args:
         ship_address: The ship's address (IP or IP:port)
-        
+
     Returns:
         True if ship became ready, False if timeout
     """
@@ -36,9 +36,9 @@ async def wait_for_ship_ready(ship_address: str) -> bool:
     max_wait_time = settings.ship_health_check_timeout
     check_interval = settings.ship_health_check_interval
     waited = 0
-    
+
     logger.info(f"Starting health check for ship at {ship_address}")
-    
+
     while waited < max_wait_time:
         try:
             timeout = aiohttp.ClientTimeout(total=5)
@@ -49,10 +49,10 @@ async def wait_for_ship_ready(ship_address: str) -> bool:
                         return True
         except Exception as e:
             logger.debug(f"Health check failed for {ship_address}: {e}")
-        
+
         await asyncio.sleep(check_interval)
         waited += check_interval
-    
+
     logger.error(
         f"Ship at {ship_address} failed to become ready within {max_wait_time}s"
     )
@@ -64,17 +64,17 @@ async def forward_request_to_ship(
 ) -> ExecResponse:
     """
     Forward an execution request to a Ship container.
-    
+
     Args:
         ship_address: The ship's address (IP or IP:port)
         request: The execution request
         session_id: The session ID for the request
-        
+
     Returns:
         ExecResponse with the result or error
     """
     url = build_exec_url(ship_address, request.type)
-    
+
     try:
         timeout = aiohttp.ClientTimeout(total=30)
         headers = {"X-SESSION-ID": session_id}
@@ -91,7 +91,7 @@ async def forward_request_to_ship(
                         success=False,
                         error=f"Ship returned {response.status}: {error_text}",
                     )
-    
+
     except aiohttp.ClientError as e:
         logger.error(f"Failed to forward request to ship {ship_address}: {e}")
         return ExecResponse(success=False, error=f"Connection error: {str(e)}")
@@ -107,18 +107,18 @@ async def upload_file_to_ship(
 ) -> UploadFileResponse:
     """
     Upload a file to a Ship container.
-    
+
     Args:
         ship_address: The ship's address (IP or IP:port)
         file_content: The file content as bytes
         file_path: The destination path in the container
         session_id: The session ID for the request
-        
+
     Returns:
         UploadFileResponse with the result or error
     """
     url = build_upload_url(ship_address)
-    
+
     try:
         # Create multipart form data
         data = aiohttp.FormData()
@@ -129,10 +129,10 @@ async def upload_file_to_ship(
             content_type="application/octet-stream",
         )
         data.add_field("file_path", file_path)
-        
+
         timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file upload
         headers = {"X-SESSION-ID": session_id}
-        
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, data=data, headers=headers) as response:
                 if response.status == 200:
@@ -149,7 +149,7 @@ async def upload_file_to_ship(
                         error=f"Ship returned {response.status}: {error_text}",
                         message="File upload failed",
                     )
-    
+
     except aiohttp.ClientError as e:
         logger.error(f"Failed to upload file to ship {ship_address}: {e}")
         return UploadFileResponse(
@@ -175,22 +175,22 @@ async def download_file_from_ship(
 ) -> Tuple[bool, bytes, str]:
     """
     Download a file from a Ship container.
-    
+
     Args:
         ship_address: The ship's address (IP or IP:port)
         file_path: The source path in the container
         session_id: The session ID for the request
-        
+
     Returns:
         Tuple of (success, file_content, error_message)
     """
     url = build_download_url(ship_address)
-    
+
     try:
         timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file download
         headers = {"X-SESSION-ID": session_id}
         params = {"file_path": file_path}
-        
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, params=params, headers=headers) as response:
                 if response.status == 200:
@@ -203,7 +203,7 @@ async def download_file_from_ship(
                         b"",
                         f"Ship returned {response.status}: {error_text}",
                     )
-    
+
     except aiohttp.ClientError as e:
         logger.error(f"Failed to download file from ship {ship_address}: {e}")
         return (False, b"", f"Connection error: {str(e)}")

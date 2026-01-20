@@ -32,13 +32,15 @@ def _get_driver_registry() -> Dict[str, Callable[[], ContainerDriver]]:
         from app.drivers.podman.host_driver import PodmanHostDriver
         from app.drivers.kubernetes.driver import KubernetesDriver
 
-        _DRIVER_REGISTRY.update({
-            "docker": DockerDriver,
-            "docker-host": DockerHostDriver,
-            "podman": PodmanDriver,
-            "podman-host": PodmanHostDriver,
-            "kubernetes": KubernetesDriver,
-        })
+        _DRIVER_REGISTRY.update(
+            {
+                "docker": DockerDriver,
+                "docker-host": DockerHostDriver,
+                "podman": PodmanDriver,
+                "podman-host": PodmanHostDriver,
+                "kubernetes": KubernetesDriver,
+            }
+        )
     return _DRIVER_REGISTRY
 
 
@@ -110,8 +112,7 @@ def get_driver() -> ContainerDriver:
     global _driver
     if _driver is None:
         raise RuntimeError(
-            "Container driver not initialized. "
-            "Call initialize_driver() first."
+            "Container driver not initialized. Call initialize_driver() first."
         )
     return _driver
 

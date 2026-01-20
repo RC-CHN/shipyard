@@ -20,15 +20,15 @@ logger = logging.getLogger(__name__)
 _UNIT_MULTIPLIERS = {
     # Two-letter suffixes
     "ki": 1024,
-    "mi": 1024 ** 2,
-    "gi": 1024 ** 3,
+    "mi": 1024**2,
+    "gi": 1024**3,
     "kb": 1024,
-    "mb": 1024 ** 2,
-    "gb": 1024 ** 3,
+    "mb": 1024**2,
+    "gb": 1024**3,
     # Single-letter suffixes
     "k": 1024,
-    "m": 1024 ** 2,
-    "g": 1024 ** 3,
+    "m": 1024**2,
+    "g": 1024**3,
     # No suffix = bytes
     "": 1,
 }

@@ -85,6 +85,4 @@ async def download_file(
         # 重新抛出HTTP异常
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"File download failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"File download failed: {str(e)}")
