@@ -16,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 def parse_memory_string(memory_str: str) -> int:
     """
-    Parse a memory string (e.g., '512m', '1g', '1024kb') to bytes.
+    Parse a memory string (e.g., '512m', '1g', '512Mi', '1Gi') to bytes.
 
-    Supported suffixes:
-        - k, kb: kilobytes
-        - m, mb: megabytes
-        - g, gb: gigabytes
+    Supported suffixes (case-insensitive):
+        - Ki, k, kb: kibibytes (1024 bytes)
+        - Mi, m, mb: mebibytes (1024^2 bytes)
+        - Gi, g, gb: gibibytes (1024^3 bytes)
         - No suffix: bytes
+
+    Note: This function supports both Docker-style (m, g) and
+    Kubernetes-style (Mi, Gi) memory units.
 
     Args:
         memory_str: The memory string to parse
@@ -36,28 +39,88 @@ def parse_memory_string(memory_str: str) -> int:
     Examples:
         >>> parse_memory_string("512m")
         536870912
+        >>> parse_memory_string("512Mi")
+        536870912
         >>> parse_memory_string("1g")
+        1073741824
+        >>> parse_memory_string("1Gi")
         1073741824
         >>> parse_memory_string("1024")
         1024
     """
-    memory_str = memory_str.lower().strip()
+    memory_str = memory_str.strip()
+    original_str = memory_str  # Keep original for error messages
+    memory_str_lower = memory_str.lower()
 
-    if memory_str.endswith("kb"):
+    # Kubernetes binary units (case-insensitive: Ki, Mi, Gi)
+    if memory_str_lower.endswith("ki"):
         return int(memory_str[:-2]) * 1024
-    if memory_str.endswith("k"):
-        return int(memory_str[:-1]) * 1024
-    if memory_str.endswith("mb"):
+    if memory_str_lower.endswith("mi"):
         return int(memory_str[:-2]) * 1024 * 1024
-    if memory_str.endswith("m"):
-        return int(memory_str[:-1]) * 1024 * 1024
-    if memory_str.endswith("gb"):
+    if memory_str_lower.endswith("gi"):
         return int(memory_str[:-2]) * 1024 * 1024 * 1024
-    if memory_str.endswith("g"):
+
+    # Docker/common units (kb, mb, gb)
+    if memory_str_lower.endswith("kb"):
+        return int(memory_str[:-2]) * 1024
+    if memory_str_lower.endswith("mb"):
+        return int(memory_str[:-2]) * 1024 * 1024
+    if memory_str_lower.endswith("gb"):
+        return int(memory_str[:-2]) * 1024 * 1024 * 1024
+
+    # Single letter units (k, m, g) - must check after two-letter suffixes
+    if memory_str_lower.endswith("k"):
+        return int(memory_str[:-1]) * 1024
+    if memory_str_lower.endswith("m"):
+        return int(memory_str[:-1]) * 1024 * 1024
+    if memory_str_lower.endswith("g"):
         return int(memory_str[:-1]) * 1024 * 1024 * 1024
 
-    # Assume bytes if no suffix
-    return int(memory_str)
+    # Try to parse as bytes (no suffix)
+    try:
+        return int(memory_str)
+    except ValueError:
+        raise ValueError(
+            f"Invalid memory format: '{original_str}'. "
+            "Supported formats: 512Mi, 1Gi, 512m, 1g, 512mb, 1gb, or plain bytes."
+        )
+
+
+# Minimum memory in bytes (128 MiB)
+MIN_MEMORY_BYTES = 128 * 1024 * 1024  # 134217728 bytes
+
+
+def parse_and_enforce_minimum_memory(memory_str: str) -> int:
+    """
+    Parse a memory string and enforce a minimum of 128 MiB.
+
+    If the requested memory is less than 128 MiB, it will be automatically
+    increased to 128 MiB and a warning will be logged.
+
+    Args:
+        memory_str: The memory string to parse
+
+    Returns:
+        The memory value in bytes, at least 128 MiB
+
+    Examples:
+        >>> parse_and_enforce_minimum_memory("64m")  # Too small, will be 128 MiB
+        134217728
+        >>> parse_and_enforce_minimum_memory("512Mi")  # OK, returns as-is
+        536870912
+    """
+    memory_bytes = parse_memory_string(memory_str)
+
+    if memory_bytes < MIN_MEMORY_BYTES:
+        logger.warning(
+            "Requested memory '%s' (%d bytes) is below minimum 128 MiB. "
+            "Automatically increased to 128 MiB.",
+            memory_str,
+            memory_bytes,
+        )
+        return MIN_MEMORY_BYTES
+
+    return memory_bytes
 
 
 def ensure_ship_dirs(ship_id: str) -> Dict[str, str]:

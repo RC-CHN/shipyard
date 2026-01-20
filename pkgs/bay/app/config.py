@@ -31,10 +31,28 @@ class Settings(BaseSettings):
     # - docker-host: For Bay running on the host machine (uses localhost + port mapping)
     # - podman: For Podman runtime (uses container network IPs)
     # - podman-host: For Podman on host machine (uses localhost + port mapping)
+    # - kubernetes: For Kubernetes runtime (uses Pod IPs)
     # - containerd: For containerd runtime (not yet implemented)
-    container_driver: Literal["docker", "docker-host", "podman", "podman-host", "containerd"] = Field(
+    container_driver: Literal["docker", "docker-host", "podman", "podman-host", "kubernetes", "containerd"] = Field(
         default="docker",
         description="Container runtime driver to use"
+    )
+
+    # Kubernetes settings
+    kube_namespace: str = Field(
+        default="default", description="Kubernetes namespace for ships"
+    )
+    kube_config_path: str | None = Field(
+        default=None, description="Path to kubeconfig file (optional)"
+    )
+    kube_image_pull_policy: str = Field(
+        default="IfNotPresent", description="Image pull policy for ship pods"
+    )
+    kube_pvc_size: str = Field(
+        default="1Gi", description="Size of PVC for each ship"
+    )
+    kube_storage_class: str | None = Field(
+        default=None, description="Storage class for PVC (optional)"
     )
 
     # Docker/Container settings

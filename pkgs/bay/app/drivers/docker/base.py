@@ -14,7 +14,7 @@ from aiodocker.exceptions import DockerError
 from app.config import settings
 from app.models import Ship, ShipSpec
 from app.drivers.core.base import ContainerDriver, ContainerInfo, ContainerIPAddressError
-from app.drivers.core.utils import parse_memory_string, ensure_ship_dirs, ship_data_exists
+from app.drivers.core.utils import parse_and_enforce_minimum_memory, ensure_ship_dirs, ship_data_exists
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ class BaseDockerDriver(ContainerDriver):
                 host_config["CpuPeriod"] = 100000
 
             if spec.memory:
-                host_config["Memory"] = parse_memory_string(spec.memory)
+                host_config["Memory"] = parse_and_enforce_minimum_memory(spec.memory)
 
         # Container configuration
         config: Dict[str, Any] = {
