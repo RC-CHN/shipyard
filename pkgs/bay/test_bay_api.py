@@ -94,12 +94,50 @@ def test_memory_utils() -> bool:
 
         # 3. 测试 normalize_memory_for_k8s
         print("3. 测试 normalize_memory_for_k8s...")
-        # 512m -> 512Mi (修正单位)
-        assert normalize_memory_for_k8s("512m") == "512Mi"
-        # 512Mi -> 512Mi (保持不变)
-        assert normalize_memory_for_k8s("512Mi") == "512Mi"
-        # 64Mi -> 134217728 (修正最小值，返回字节字符串)
+
+        # 3.1 Docker 风格单位（kb/mb/gb 和 k/m/g，大小写混合）
+        # 注意：值必须 >= 128 MiB 才不会触发最小值限制
+        # KB -> Ki (需要足够大的值，131072KB = 128Mi)
+        assert normalize_memory_for_k8s("256000KB") == "256000Ki"
+        assert normalize_memory_for_k8s("256000kb") == "256000Ki"
+        # MB/mb -> Mi (256MB > 128Mi)
+        assert normalize_memory_for_k8s("256MB") == "256Mi"
+        assert normalize_memory_for_k8s("256mb") == "256Mi"
+        # GB/gb -> Gi
+        assert normalize_memory_for_k8s("2GB") == "2Gi"
+        assert normalize_memory_for_k8s("2gb") == "2Gi"
+        # 简写 k/m/g -> Ki/Mi/Gi
+        assert normalize_memory_for_k8s("256000K") == "256000Ki"
+        assert normalize_memory_for_k8s("256000k") == "256000Ki"
+        assert normalize_memory_for_k8s("256M") == "256Mi"
+        assert normalize_memory_for_k8s("256m") == "256Mi"
+        assert normalize_memory_for_k8s("2G") == "2Gi"
+        assert normalize_memory_for_k8s("2g") == "2Gi"
+
+        # 3.2 已经是 K8s 单位，保持原样（大小写敏感）
+        # 256Mi > 128Mi，不会触发最小值限制
+        assert normalize_memory_for_k8s("256Mi") == "256Mi"
+        assert normalize_memory_for_k8s("256MI") == "256MI"
+        assert normalize_memory_for_k8s("1Gi") == "1Gi"
+        assert normalize_memory_for_k8s("1GI") == "1GI"
+
+        # 3.3 纯字节数字（无单位）应原样透传（>= 128Mi = 134217728 字节）
+        assert normalize_memory_for_k8s("134217728") == "134217728"
+        assert normalize_memory_for_k8s("536870912") == "536870912"
+
+        # 3.4 小的值，转换后低于最小值时应提升到最小内存（128Mi -> 134217728 字节）
+        # 64Mi < 128Mi，应该被提升
         assert normalize_memory_for_k8s("64Mi") == "134217728"
+        # 64m（Docker 的 MB 单位）在转换后也应被提升到最小值
+        assert normalize_memory_for_k8s("64m") == "134217728"
+        # 1k（1024 字节）也应被提升
+        assert normalize_memory_for_k8s("1k") == "134217728"
+        # 小的 Ki 值也应被提升
+        assert normalize_memory_for_k8s("512Ki") == "134217728"
+
+        # 3.5 空字符串处理
+        assert normalize_memory_for_k8s("") == ""
+
         print("✅ normalize_memory_for_k8s 通过")
 
         return True

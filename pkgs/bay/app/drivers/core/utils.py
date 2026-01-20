@@ -6,12 +6,32 @@ container runtime drivers (Docker, Podman, etc.).
 """
 
 import os
+import re
 import logging
 from typing import Dict
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# Unit multipliers for memory parsing (lowercase keys)
+# Ordered by suffix length (longer suffixes first) to ensure correct matching
+_UNIT_MULTIPLIERS = {
+    # Two-letter suffixes
+    "ki": 1024,
+    "mi": 1024 ** 2,
+    "gi": 1024 ** 3,
+    "kb": 1024,
+    "mb": 1024 ** 2,
+    "gb": 1024 ** 3,
+    # Single-letter suffixes
+    "k": 1024,
+    "m": 1024 ** 2,
+    "g": 1024 ** 3,
+    # No suffix = bytes
+    "": 1,
+}
 
 
 def parse_memory_string(memory_str: str) -> int:
@@ -49,41 +69,26 @@ def parse_memory_string(memory_str: str) -> int:
         1024
     """
     memory_str = memory_str.strip()
-    original_str = memory_str  # Keep original for error messages
-    memory_str_lower = memory_str.lower()
+    original_str = memory_str
 
-    # Kubernetes binary units (case-insensitive: Ki, Mi, Gi)
-    if memory_str_lower.endswith("ki"):
-        return int(memory_str[:-2]) * 1024
-    if memory_str_lower.endswith("mi"):
-        return int(memory_str[:-2]) * 1024 * 1024
-    if memory_str_lower.endswith("gi"):
-        return int(memory_str[:-2]) * 1024 * 1024 * 1024
-
-    # Docker/common units (kb, mb, gb)
-    if memory_str_lower.endswith("kb"):
-        return int(memory_str[:-2]) * 1024
-    if memory_str_lower.endswith("mb"):
-        return int(memory_str[:-2]) * 1024 * 1024
-    if memory_str_lower.endswith("gb"):
-        return int(memory_str[:-2]) * 1024 * 1024 * 1024
-
-    # Single letter units (k, m, g) - must check after two-letter suffixes
-    if memory_str_lower.endswith("k"):
-        return int(memory_str[:-1]) * 1024
-    if memory_str_lower.endswith("m"):
-        return int(memory_str[:-1]) * 1024 * 1024
-    if memory_str_lower.endswith("g"):
-        return int(memory_str[:-1]) * 1024 * 1024 * 1024
-
-    # Try to parse as bytes (no suffix)
-    try:
-        return int(memory_str)
-    except ValueError:
+    # Use regex to split number and unit
+    match = re.fullmatch(r"(\d+)([a-zA-Z]*)", memory_str)
+    if not match:
         raise ValueError(
             f"Invalid memory format: '{original_str}'. "
             "Supported formats: 512Mi, 1Gi, 512m, 1g, 512mb, 1gb, or plain bytes."
         )
+
+    number_str, unit_str = match.groups()
+    unit_lower = unit_str.lower()
+
+    if unit_lower not in _UNIT_MULTIPLIERS:
+        raise ValueError(
+            f"Invalid memory format: '{original_str}'. "
+            "Supported formats: 512Mi, 1Gi, 512m, 1g, 512mb, 1gb, or plain bytes."
+        )
+
+    return int(number_str) * _UNIT_MULTIPLIERS[unit_lower]
 
 
 # Minimum memory in bytes (128 MiB)

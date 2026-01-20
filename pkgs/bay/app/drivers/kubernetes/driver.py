@@ -63,6 +63,7 @@ class KubernetesDriver(ContainerDriver):
     """
 
     def __init__(self) -> None:
+        self._api_client: Optional[client.ApiClient] = None
         self.core_api: Optional[client.CoreV1Api] = None
         self.namespace: str = _get_current_namespace()
         self._initialized: bool = False
@@ -86,7 +87,9 @@ class KubernetesDriver(ContainerDriver):
                     kubeconfig or "default location"
                 )
 
-            self.core_api = client.CoreV1Api()
+            # Create and save the ApiClient instance for proper cleanup
+            self._api_client = client.ApiClient()
+            self.core_api = client.CoreV1Api(self._api_client)
 
             # Test connection by listing namespaces
             await self.core_api.list_namespace(limit=1)
@@ -104,9 +107,10 @@ class KubernetesDriver(ContainerDriver):
     async def close(self) -> None:
         """Close Kubernetes client."""
         if self.core_api:
-            # kubernetes-asyncio doesn't require explicit close for CoreV1Api
-            # but we reset state for consistency
-            await client.ApiClient().close()
+            # Close the actual ApiClient instance that backs CoreV1Api
+            if self._api_client is not None:
+                await self._api_client.close()
+                self._api_client = None
             self.core_api = None
             self._initialized = False
             logger.info("KubernetesDriver closed")

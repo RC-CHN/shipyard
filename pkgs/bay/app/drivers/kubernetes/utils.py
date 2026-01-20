@@ -67,7 +67,69 @@ def build_pvc_manifest(
     )
 
 
-from app.drivers.core.utils import parse_and_enforce_minimum_memory, parse_memory_string
+from app.drivers.core.utils import parse_memory_string, MIN_MEMORY_BYTES
+
+
+# Mapping of Docker-style suffixes to K8s-style suffixes (lowercase keys)
+_DOCKER_TO_K8S_SUFFIX = {
+    "kb": "Ki",
+    "k": "Ki",
+    "mb": "Mi",
+    "m": "Mi",  # Critical: Docker 'm' means MiB, K8s 'm' means milli-bytes!
+    "gb": "Gi",
+    "g": "Gi",
+}
+
+
+def _enforce_minimum_memory(memory: str) -> tuple[int, bool]:
+    """
+    Enforce minimum memory limit and return (bytes, was_clamped).
+
+    Args:
+        memory: Memory string to check
+
+    Returns:
+        Tuple of (safe_bytes, was_clamped) where was_clamped indicates
+        if the value was increased to meet the minimum.
+    """
+    from app.drivers.core.utils import logger
+
+    original_bytes = parse_memory_string(memory)
+    if original_bytes < MIN_MEMORY_BYTES:
+        logger.warning(
+            "Requested memory '%s' (%d bytes) is below minimum 128 MiB. "
+            "Automatically increased to 128 MiB.",
+            memory,
+            original_bytes,
+        )
+        return MIN_MEMORY_BYTES, True
+    return original_bytes, False
+
+
+def _normalize_unit_for_k8s(memory: str) -> str:
+    """
+    Normalize Docker-style units to K8s-style units without min enforcement.
+
+    Args:
+        memory: Memory string to normalize
+
+    Returns:
+        Normalized memory string with K8s-compatible units
+    """
+    mem = memory.strip()
+    lower = mem.lower()
+
+    # Already using K8s binary units (case-insensitive)
+    if lower.endswith(("ki", "mi", "gi")):
+        return mem
+
+    # Convert Docker-style units to K8s binary units
+    for suffix, k8s_suffix in _DOCKER_TO_K8S_SUFFIX.items():
+        if lower.endswith(suffix):
+            return mem[:-len(suffix)] + k8s_suffix
+
+    # No recognized unit suffix, assume bytes - return as-is
+    return mem
 
 
 def normalize_memory_for_k8s(memory: str) -> str:
@@ -95,44 +157,15 @@ def normalize_memory_for_k8s(memory: str) -> str:
     if not memory:
         return memory
 
-    # First, enforce minimum memory limit
-    # This will log a warning if memory is too small
-    safe_bytes = parse_and_enforce_minimum_memory(memory)
-    original_bytes = parse_memory_string(memory)
+    # Enforce minimum memory limit
+    safe_bytes, was_clamped = _enforce_minimum_memory(memory)
 
     # If memory was increased to meet minimum, return the safe byte value
-    if safe_bytes > original_bytes:
+    if was_clamped:
         return str(safe_bytes)
 
-    # Otherwise, proceed with unit normalization for the original string
-    memory = memory.strip()
-
-    # Already using Kubernetes binary units
-    if memory.endswith("Ki") or memory.endswith("Mi") or memory.endswith("Gi"):
-        return memory
-
-    # Also allow uppercase binary units
-    if memory.endswith("KI") or memory.endswith("MI") or memory.endswith("GI"):
-        return memory
-
-    # Convert Docker-style units to Kubernetes binary units
-    if memory.endswith("kb") or memory.endswith("KB"):
-        return memory[:-2] + "Ki"
-    if memory.endswith("k") or memory.endswith("K"):
-        return memory[:-1] + "Ki"
-    if memory.endswith("mb") or memory.endswith("MB"):
-        return memory[:-2] + "Mi"
-    if memory.endswith("m") or memory.endswith("M"):
-        # This is the critical case: '512m' in Docker means 512 MiB,
-        # but in Kubernetes '512m' means 0.512 bytes!
-        return memory[:-1] + "Mi"
-    if memory.endswith("gb") or memory.endswith("GB"):
-        return memory[:-2] + "Gi"
-    if memory.endswith("g") or memory.endswith("G"):
-        return memory[:-1] + "Gi"
-
-    # No unit suffix, assume bytes
-    return memory
+    # Otherwise, normalize the unit for K8s
+    return _normalize_unit_for_k8s(memory)
 
 
 def build_pod_manifest(

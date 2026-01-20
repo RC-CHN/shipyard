@@ -265,17 +265,20 @@ show_help() {
   help      - 显示帮助
 
 集群类型:
-  kind      - Kind 集群 (默认)
-  minikube  - Minikube 集群
-  k3s/k3d   - K3s/K3d 集群
+  docker-desktop  - Docker Desktop Kubernetes (默认)
+  kind            - Kind 集群
+  minikube        - Minikube 集群
+  k3d             - K3d 集群
 
 示例:
-  $0                    # 在 kind 集群中执行完整测试
-  $0 all minikube       # 在 minikube 中执行完整测试
-  $0 build              # 仅构建镜像
-  $0 deploy             # 仅部署
-  $0 test               # 仅运行测试
-  $0 cleanup            # 清理资源
+  $0                           # 在 docker-desktop 集群中执行完整测试
+  $0 all docker-desktop        # 在 Docker Desktop 中执行完整测试
+  $0 all kind                  # 在 kind 集群中执行完整测试
+  $0 all minikube              # 在 minikube 中执行完整测试
+  $0 build                     # 仅构建镜像
+  $0 deploy                    # 仅部署
+  $0 test                      # 仅运行测试
+  $0 cleanup                   # 清理资源
 EOF
 }
 
