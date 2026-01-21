@@ -19,6 +19,7 @@ dependencies = [
     "greenlet>=3.2.4",
     "python-multipart>=0.0.20",
     "tomli>=2.0.0",
+    "kubernetes-asyncio>=34.3.3",
 ]
 
 [project.optional-dependencies]

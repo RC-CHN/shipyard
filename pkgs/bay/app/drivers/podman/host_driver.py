@@ -65,6 +65,6 @@ class PodmanHostDriver(BasePodmanDriver):
         # Fallback to container IP (might not work on host)
         logger.warning(
             "Could not get port mapping for ship %s, falling back to container IP",
-            ship_id
+            ship_id,
         )
         return super()._get_ip_address(container_info, ship_id)

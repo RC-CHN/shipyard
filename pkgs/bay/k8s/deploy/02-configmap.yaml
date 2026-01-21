@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bay-config
+  namespace: shipyard
+data:
+  # Bay Configuration
+  LOG_LEVEL: "INFO"
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  
+  # Database
+  DATABASE_URL: "sqlite+aiosqlite:///data/bay.db"
+  
+  # Container Driver
+  CONTAINER_DRIVER: "kubernetes"
+  DOCKER_IMAGE: "ship:latest"
+  SHIP_CONTAINER_PORT: "8123"
+  
+  # Kubernetes Driver Config
+  KUBE_NAMESPACE: "shipyard"
+  KUBE_IMAGE_PULL_POLICY: "IfNotPresent"
+  KUBE_PVC_SIZE: "1Gi"
+  
+  # Limits
+  MAX_SHIP_NUM: "10"
+  BEHAVIOR_AFTER_MAX_SHIP: "wait"

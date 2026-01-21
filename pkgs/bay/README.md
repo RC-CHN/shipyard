@@ -97,12 +97,24 @@ Authorization: Bearer <your-access-token>
 - `DATABASE_URL`: SQLite数据库文件路径
 - `MAX_SHIP_NUM`: 最大Ship数量
 - `BEHAVIOR_AFTER_MAX_SHIP`: 达到最大Ship数量后的行为（reject/wait）
-- `CONTAINER_DRIVER`: 容器运行时驱动（docker/docker-host/containerd/podman，默认docker-host）
+- `CONTAINER_DRIVER`: 容器运行时驱动（docker/docker-host/podman/podman-host/kubernetes，默认docker-host）
 - `DOCKER_IMAGE`: Ship容器镜像名称
 - `SHIP_CONTAINER_PORT`: Ship容器内部端口（默认8123）
 - `SHIP_HEALTH_CHECK_TIMEOUT`: Ship健康检查最大超时时间（秒，默认60）
 - `SHIP_HEALTH_CHECK_INTERVAL`: Ship健康检查间隔时间（秒，默认2）
 - `DOCKER_NETWORK`: Docker网络名称
+
+### Kubernetes 专用配置
+
+- `KUBE_NAMESPACE`: Kubernetes 命名空间（默认读取 in-cluster 配置或 default）
+- `KUBE_CONFIG_PATH`: Kubeconfig 文件路径（可选，默认使用 in-cluster 配置）
+- `KUBE_IMAGE_PULL_POLICY`: 镜像拉取策略（默认 IfNotPresent）
+- `KUBE_PVC_SIZE`: 每个 Ship 的 PVC 大小（默认 1Gi）
+- `KUBE_STORAGE_CLASS`: PVC 的 StorageClass（可选，使用集群默认）
+
+**注意**: 在配置资源限制时（如通过 API 请求），请务必使用正确的 Kubernetes 单位：
+- 内存：使用 `Mi` (Mebibytes) 或 `Gi` (Gibibytes)。例如 `512Mi`。
+- **警告**: 不要使用 `m` 作为内存单位（如 `512m`），这在 Kubernetes 中表示 "milli-bytes"（千分之一字节），会导致容器创建失败且报错信息（如 `no space left on device`）极具误导性。
 
 ## 容器驱动架构
 
@@ -114,8 +126,10 @@ Bay 使用可插拔的驱动架构来支持不同的容器运行时和部署模�
 |------|------|------|----------|
 | **docker** | ✅ 可用 | Bay 运行在 Docker 容器内 | 使用容器内部IP (如 `172.18.0.2:8123`) |
 | **docker-host** | ✅ 可用 (默认) | Bay 运行在宿主机上 | 使用 localhost + 端口映射 (如 `127.0.0.1:39314`) |
+| **podman** | ✅ 可用 | Bay 运行在 Podman 容器内 | 使用容器内部IP |
+| **podman-host** | ✅ 可用 | Bay 运行在宿主机上 (Podman) | 使用 localhost + 端口映射 |
+| **kubernetes** | ✅ 可用 | Bay 运行在 Kubernetes 集群内 | 使用 Pod IP + PVC 持久化存储 |
 | **containerd** | 🚧 计划中 | 使用 containerd 运行时 | - |
-| **podman** | 🚧 计划中 | 使用 Podman 运行时 | - |
 
 ### 选择正确的驱动
 

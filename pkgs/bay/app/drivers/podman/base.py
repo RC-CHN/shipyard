@@ -29,7 +29,7 @@ def get_podman_socket() -> str:
     mounted_socket = "/var/run/podman/podman.sock"
     if os.path.exists(mounted_socket):
         return f"unix://{mounted_socket}"
-    
+
     # Fall back to XDG_RUNTIME_DIR for host deployment
     xdg = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     return f"unix://{xdg}/podman/podman.sock"
@@ -60,8 +60,11 @@ class BasePodmanDriver(BaseDockerDriver):
             self.client = aiodocker.Docker(url=socket)
             # Test connection
             await self.client.version()
-            logger.info("%s initialized successfully (socket: %s)",
-                       self.__class__.__name__, socket)
+            logger.info(
+                "%s initialized successfully (socket: %s)",
+                self.__class__.__name__,
+                socket,
+            )
         except Exception as e:
             logger.error("Failed to initialize %s: %s", self.__class__.__name__, e)
             raise

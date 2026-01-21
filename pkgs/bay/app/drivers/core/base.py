@@ -27,8 +27,7 @@ class ContainerIPAddressError(Exception):
         self.ship_id = ship_id
         self.details = details
         message = (
-            f"Failed to obtain IP address for container {container_id} "
-            f"(ship {ship_id})"
+            f"Failed to obtain IP address for container {container_id} (ship {ship_id})"
         )
         if details:
             message += f": {details}"

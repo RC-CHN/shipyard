@@ -1,4 +1,5 @@
 """Statistics and version information endpoints"""
+
 from fastapi import APIRouter
 import tomli
 from pathlib import Path
@@ -24,5 +25,5 @@ async def get_stat():
         "service": "bay",
         "version": get_version(),
         "status": "running",
-        "author": "AstrBot Team"
+        "author": "AstrBot Team",
     }
