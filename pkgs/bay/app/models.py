@@ -71,6 +71,12 @@ class ShipSpec(BaseModel):
     memory: Optional[str] = Field(
         None, description="Memory allocation, e.g., '512m', '1g'"
     )
+    disk: Optional[str] = Field(
+        None,
+        description="Disk/storage allocation, e.g., '1Gi', '10G'. "
+        "For Docker/Podman: used as storage driver quota if supported. "
+        "For Kubernetes: used as PVC size.",
+    )
 
 
 class CreateShipRequest(BaseModel):

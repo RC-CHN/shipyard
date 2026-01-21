@@ -62,7 +62,7 @@ class KubernetesDriver(ContainerDriver):
     Configuration:
         - Set CONTAINER_DRIVER=kubernetes
         - Set KUBE_NAMESPACE to specify the target namespace
-        - Set KUBE_PVC_SIZE for storage size
+        - Set DEFAULT_SHIP_DISK for storage size (e.g., '1Gi', '10G')
         - Set KUBE_STORAGE_CLASS for storage class (optional)
     """
 
@@ -150,9 +150,14 @@ class KubernetesDriver(ContainerDriver):
         pvc_name = get_pvc_name(ship.id)
 
         try:
+            # Extract resource specs
+            cpus = spec.cpus if spec else None
+            memory = spec.memory if spec else None
+            disk = spec.disk if spec else None
+
             # Step 1: Create PVC
             logger.info("Creating PVC %s for ship %s", pvc_name, ship.id)
-            pvc_manifest = build_pvc_manifest(ship.id)
+            pvc_manifest = build_pvc_manifest(ship.id, storage_size=disk)
 
             try:
                 await self.core_api.create_namespaced_persistent_volume_claim(
@@ -168,9 +173,6 @@ class KubernetesDriver(ContainerDriver):
 
             # Step 2: Create Pod
             logger.info("Creating Pod %s for ship %s", pod_name, ship.id)
-
-            cpus = spec.cpus if spec else None
-            memory = spec.memory if spec else None
 
             pod_manifest = build_pod_manifest(
                 ship_id=ship.id,

@@ -20,6 +20,7 @@ from app.drivers.core.base import (
 )
 from app.drivers.core.utils import (
     parse_and_enforce_minimum_memory,
+    parse_and_enforce_minimum_disk,
     ensure_ship_dirs,
     ship_data_exists,
 )
@@ -72,6 +73,7 @@ class BaseDockerDriver(ContainerDriver):
         assert self.client is not None  # For type checker
 
         container_config = self._build_container_config(ship, spec)
+        container = None
 
         try:
             # Create container
@@ -81,7 +83,27 @@ class BaseDockerDriver(ContainerDriver):
 
             # Start container
             await container.start()
+        except DockerError as e:
+            # Check if the error is due to unsupported storage quota
+            error_msg = str(e)
+            if "storage-opt" in error_msg.lower() or "storageopt" in error_msg.lower():
+                logger.warning(
+                    "Storage quota not supported by container runtime. "
+                    "Retrying without disk limit. Error: %s",
+                    error_msg,
+                )
+                # Retry without storage quota
+                if "StorageOpt" in container_config["config"].get("HostConfig", {}):
+                    del container_config["config"]["HostConfig"]["StorageOpt"]
+                    container = await self.client.containers.create_or_replace(
+                        name=container_config["name"], config=container_config["config"]
+                    )
+                    await container.start()
+            else:
+                logger.error("Failed to create container for ship %s: %s", ship.id, e)
+                raise
 
+        try:
             # Get container info
             container_info = await container.show()
 
@@ -133,7 +155,7 @@ class BaseDockerDriver(ContainerDriver):
             )
 
         except DockerError as e:
-            logger.error("Failed to create container for ship %s: %s", ship.id, e)
+            logger.error("Failed to get container info for ship %s: %s", ship.id, e)
             raise
 
     async def stop_ship_container(self, container_id: str) -> bool:
@@ -243,6 +265,19 @@ class BaseDockerDriver(ContainerDriver):
 
             if spec.memory:
                 host_config["Memory"] = parse_and_enforce_minimum_memory(spec.memory)
+
+            if spec.disk:
+                # Docker storage quota using StorageOpt
+                # Note: This requires Docker's overlay2 driver with xfs filesystem
+                # and pquota mount option, or ext4 with quota enabled.
+                # If unsupported, Docker will ignore this option.
+                disk_bytes = parse_and_enforce_minimum_disk(spec.disk)
+                host_config["StorageOpt"] = {"size": str(disk_bytes)}
+                logger.debug(
+                    "Setting storage quota for ship: %d bytes (%s)",
+                    disk_bytes,
+                    spec.disk,
+                )
 
         # Container configuration
         config: Dict[str, Any] = {

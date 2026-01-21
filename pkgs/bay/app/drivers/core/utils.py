@@ -94,6 +94,68 @@ def parse_memory_string(memory_str: str) -> int:
 # Minimum memory in bytes (128 MiB)
 MIN_MEMORY_BYTES = 128 * 1024 * 1024  # 134217728 bytes
 
+# Minimum disk size in bytes (100 MiB)
+MIN_DISK_BYTES = 100 * 1024 * 1024  # 104857600 bytes
+
+
+def parse_disk_string(disk_str: str) -> int:
+    """
+    Parse a disk/storage string (e.g., '1Gi', '10G', '512Mi') to bytes.
+
+    Uses the same parsing logic as memory strings for consistency.
+
+    Args:
+        disk_str: The disk string to parse
+
+    Returns:
+        The disk value in bytes
+
+    Raises:
+        ValueError: If the disk string format is invalid
+
+    Examples:
+        >>> parse_disk_string("1Gi")
+        1073741824
+        >>> parse_disk_string("10G")
+        10737418240
+        >>> parse_disk_string("512Mi")
+        536870912
+    """
+    return parse_memory_string(disk_str)
+
+
+def parse_and_enforce_minimum_disk(disk_str: str) -> int:
+    """
+    Parse a disk string and enforce a minimum of 100 MiB.
+
+    If the requested disk size is less than 100 MiB, it will be automatically
+    increased to 100 MiB and a warning will be logged.
+
+    Args:
+        disk_str: The disk string to parse
+
+    Returns:
+        The disk value in bytes, at least 100 MiB
+
+    Examples:
+        >>> parse_and_enforce_minimum_disk("50m")  # Too small, will be 100 MiB
+        104857600
+        >>> parse_and_enforce_minimum_disk("1Gi")  # OK, returns as-is
+        1073741824
+    """
+    disk_bytes = parse_disk_string(disk_str)
+
+    if disk_bytes < MIN_DISK_BYTES:
+        logger.warning(
+            "Requested disk '%s' (%d bytes) is below minimum 100 MiB. "
+            "Automatically increased to 100 MiB.",
+            disk_str,
+            disk_bytes,
+        )
+        return MIN_DISK_BYTES
+
+    return disk_bytes
+
 
 def parse_and_enforce_minimum_memory(memory_str: str) -> int:
     """

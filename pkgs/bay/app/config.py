@@ -47,7 +47,6 @@ class Settings(BaseSettings):
     kube_image_pull_policy: str = Field(
         default="IfNotPresent", description="Image pull policy for ship pods"
     )
-    kube_pvc_size: str = Field(default="1Gi", description="Size of PVC for each ship")
     kube_storage_class: str | None = Field(
         default=None, description="Storage class for PVC (optional)"
     )
@@ -68,6 +67,12 @@ class Settings(BaseSettings):
     )
     default_ship_memory: str = Field(
         default="512m", description="Default ship memory allocation"
+    )
+    default_ship_disk: str = Field(
+        default="1Gi",
+        description="Default ship disk/storage allocation (e.g., '1Gi', '10G'). "
+        "For Docker/Podman: used as storage driver quota if supported. "
+        "For Kubernetes: used as PVC size.",
     )
 
     # Ship health check settings

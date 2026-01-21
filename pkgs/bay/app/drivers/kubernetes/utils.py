@@ -37,14 +37,17 @@ def build_pvc_manifest(
 
     Args:
         ship_id: The unique identifier for the ship
-        storage_size: Size of the PVC (default: from settings)
+        storage_size: Size of the PVC (default: from settings.default_ship_disk)
         storage_class: Storage class to use (default: from settings)
 
     Returns:
         V1PersistentVolumeClaim: The PVC manifest
     """
     pvc_name = f"ship-{ship_id}"
-    size = storage_size or settings.kube_pvc_size
+    # Use provided storage_size, or fall back to default_ship_disk from settings
+    raw_size = storage_size or settings.default_ship_disk
+    # Normalize the disk size for Kubernetes (convert Docker-style to K8s-style units)
+    size = normalize_disk_for_k8s(raw_size)
     sc = storage_class or settings.kube_storage_class
 
     return V1PersistentVolumeClaim(
@@ -67,7 +70,12 @@ def build_pvc_manifest(
     )
 
 
-from app.drivers.core.utils import parse_memory_string, MIN_MEMORY_BYTES
+from app.drivers.core.utils import (
+    parse_memory_string,
+    parse_disk_string,
+    MIN_MEMORY_BYTES,
+    MIN_DISK_BYTES,
+)
 
 
 # Mapping of Docker-style suffixes to K8s-style suffixes (lowercase keys)
@@ -166,6 +174,67 @@ def normalize_memory_for_k8s(memory: str) -> str:
 
     # Otherwise, normalize the unit for K8s
     return _normalize_unit_for_k8s(memory)
+
+
+def _enforce_minimum_disk(disk: str) -> tuple[int, bool]:
+    """
+    Enforce minimum disk limit and return (bytes, was_clamped).
+
+    Args:
+        disk: Disk string to check
+
+    Returns:
+        Tuple of (safe_bytes, was_clamped) where was_clamped indicates
+        if the value was increased to meet the minimum.
+    """
+    from app.drivers.core.utils import logger
+
+    original_bytes = parse_disk_string(disk)
+    if original_bytes < MIN_DISK_BYTES:
+        logger.warning(
+            "Requested disk '%s' (%d bytes) is below minimum 100 MiB. "
+            "Automatically increased to 100 MiB.",
+            disk,
+            original_bytes,
+        )
+        return MIN_DISK_BYTES, True
+    return original_bytes, False
+
+
+def normalize_disk_for_k8s(disk: str) -> str:
+    """
+    Normalize disk/storage unit for Kubernetes.
+
+    Converts Docker-style disk units (like '1g', '10G') to Kubernetes-style
+    binary units (like '1Gi', '10Gi') to prevent the dangerous 'm' suffix
+    issue in Kubernetes (where 'm' means milli-bytes, not megabytes).
+
+    Also enforces a minimum disk limit of 100 MiB.
+
+    Args:
+        disk: Disk string to normalize
+
+    Returns:
+        Normalized disk string safe for Kubernetes
+
+    Examples:
+        >>> normalize_disk_for_k8s("1g")
+        "1Gi"
+        >>> normalize_disk_for_k8s("50Mi")  # Too small
+        "104857600"  # 100 MiB in bytes
+    """
+    if not disk:
+        return disk
+
+    # Enforce minimum disk limit
+    safe_bytes, was_clamped = _enforce_minimum_disk(disk)
+
+    # If disk was increased to meet minimum, return the safe byte value
+    if was_clamped:
+        return str(safe_bytes)
+
+    # Otherwise, normalize the unit for K8s
+    return _normalize_unit_for_k8s(disk)
 
 
 def build_pod_manifest(

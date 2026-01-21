@@ -152,6 +152,94 @@ def test_memory_utils() -> bool:
         return False
 
 
+def test_disk_utils() -> bool:
+    print_section("测试 0.5: 磁盘工具函数单元测试")
+    try:
+        sys.path.append(os.getcwd())
+        from app.config import settings
+        from app.models import ShipSpec
+        from app.drivers.core.utils import (
+            parse_disk_string,
+            parse_and_enforce_minimum_disk,
+            MIN_DISK_BYTES,
+        )
+        from app.drivers.kubernetes.utils import normalize_disk_for_k8s
+
+        # 1. 测试配置中的默认值
+        print("1. 测试默认磁盘配置...")
+        print(f"   default_ship_disk: {settings.default_ship_disk}")
+        assert settings.default_ship_disk == "1Gi", f"Expected '1Gi', got '{settings.default_ship_disk}'"
+        print("✅ 默认磁盘配置正确")
+
+        # 2. 测试 parse_disk_string
+        print("2. 测试 parse_disk_string...")
+        # K8s 风格单位
+        assert parse_disk_string("1Gi") == 1073741824
+        assert parse_disk_string("512Mi") == 536870912
+        # Docker 风格单位
+        assert parse_disk_string("1g") == 1073741824
+        assert parse_disk_string("512m") == 536870912
+        assert parse_disk_string("10G") == 10737418240
+        # 纯字节
+        assert parse_disk_string("1073741824") == 1073741824
+        print("✅ parse_disk_string 通过")
+
+        # 3. 测试 parse_and_enforce_minimum_disk
+        print("3. 测试 parse_and_enforce_minimum_disk...")
+        # 50Mi < 100Mi，应该被修正到 100Mi
+        assert parse_and_enforce_minimum_disk("50Mi") == MIN_DISK_BYTES
+        # 1Gi > 100Mi，应该保持不变
+        assert parse_and_enforce_minimum_disk("1Gi") == 1073741824
+        print("✅ parse_and_enforce_minimum_disk 通过")
+
+        # 4. 测试 normalize_disk_for_k8s
+        print("4. 测试 normalize_disk_for_k8s...")
+
+        # 4.1 Docker 风格单位转换为 K8s 风格
+        assert normalize_disk_for_k8s("1g") == "1Gi"
+        assert normalize_disk_for_k8s("10G") == "10Gi"
+        assert normalize_disk_for_k8s("512m") == "512Mi"
+        assert normalize_disk_for_k8s("1024M") == "1024Mi"
+
+        # 4.2 已经是 K8s 单位，保持原样
+        assert normalize_disk_for_k8s("1Gi") == "1Gi"
+        assert normalize_disk_for_k8s("512Mi") == "512Mi"
+
+        # 4.3 纯字节数字应原样透传（>= 100Mi）
+        assert normalize_disk_for_k8s("1073741824") == "1073741824"
+
+        # 4.4 小的值应被提升到最小值（100Mi = 104857600 字节）
+        assert normalize_disk_for_k8s("50Mi") == str(MIN_DISK_BYTES)
+        assert normalize_disk_for_k8s("50m") == str(MIN_DISK_BYTES)
+
+        # 4.5 空字符串处理
+        assert normalize_disk_for_k8s("") == ""
+
+        print("✅ normalize_disk_for_k8s 通过")
+
+        # 5. 测试 ShipSpec 包含 disk 字段
+        print("5. 测试 ShipSpec disk 字段...")
+        spec = ShipSpec(cpus=2.0, memory="512m", disk="5Gi")
+        assert spec.disk == "5Gi"
+        # 测试 disk 字段可选
+        spec_no_disk = ShipSpec(cpus=1.0, memory="256m")
+        assert spec_no_disk.disk is None
+        print("✅ ShipSpec disk 字段通过")
+
+        return True
+    except ImportError as e:
+        print(f"⚠️ 无法导入应用模块，跳过磁盘工具单元测试: {e}")
+        return True
+    except AssertionError as e:
+        print(f"❌ 断言失败: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ 测试出错: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def test_health() -> bool:
     print_section("测试 1: /health 健康检查")
     try:
@@ -256,6 +344,45 @@ def test_create_ship_with_small_memory() -> bool:
             201,
             "极小内存 Ship 创建成功（说明已被修正）",
             "极小内存 Ship 创建失败",
+        ):
+            return False
+
+        data = resp.json()
+        ship_id = data.get("id")
+        print(f"Ship ID: {ship_id}")
+
+        # 清理
+        print(f"清理 Ship {ship_id}...")
+        requests.delete(f"{BAY_URL}/ship/{ship_id}", headers=AUTH_HEADERS, timeout=30)
+
+        return True
+    except Exception as exc:
+        print(f"❌ 请求失败: {exc}")
+        return False
+
+
+def test_create_ship_with_disk() -> bool:
+    print_section("测试 6.6: /ship 创建 Ship（带磁盘限制）")
+    try:
+        # 创建带有 disk 参数的 Ship
+        payload = {
+            "ttl": 60,
+            "max_session_num": 1,
+            "spec": {"cpus": 0.5, "memory": "256m", "disk": "2Gi"},
+        }
+        print(f"请求载荷: {payload}")
+        resp = requests.post(
+            f"{BAY_URL}/ship",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+
+        if not check_status(
+            resp,
+            201,
+            "带磁盘限制的 Ship 创建成功",
+            "带磁盘限制的 Ship 创建失败",
         ):
             return False
 
@@ -460,7 +587,11 @@ def main() -> None:
 
     # 单元测试
     if not test_memory_utils():
-        print("\n单元测试失败，退出测试")
+        print("\n内存单元测试失败，退出测试")
+        sys.exit(1)
+
+    if not test_disk_utils():
+        print("\n磁盘单元测试失败，退出测试")
         sys.exit(1)
 
     # 基础健康与信息
@@ -486,6 +617,9 @@ def main() -> None:
 
     # 测试小内存自动修正
     test_create_ship_with_small_memory()
+
+    # 测试带磁盘限制的 Ship 创建
+    test_create_ship_with_disk()
 
     ship_id = test_create_ship()
     if not ship_id:
