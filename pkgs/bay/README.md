@@ -116,6 +116,67 @@ Authorization: Bearer <your-access-token>
 - 内存：使用 `Mi` (Mebibytes) 或 `Gi` (Gibibytes)。例如 `512Mi`。
 - **警告**: 不要使用 `m` 作为内存单位（如 `512m`），这在 Kubernetes 中表示 "milli-bytes"（千分之一字节），会导致容器创建失败且报错信息（如 `no space left on device`）极具误导性。
 
+### Kubernetes 数据持久化
+
+Kubernetes 驱动使用 PVC (PersistentVolumeClaim) 实现 Ship 数据持久化。当 Ship 停止时（TTL 过期或手动停止），只会删除 Pod 而保留 PVC，这样 Ship 可以在稍后恢复并保留其数据。
+
+**重要**：数据的实际持久化行为取决于底层 PersistentVolume 的回收策略（在 StorageClass 级别配置）：
+
+| 回收策略 | 行为 | 建议场景 |
+|---------|------|---------|
+| `Retain` | PVC 删除后 PV 和数据保留 | **生产环境推荐** |
+| `Delete` | PVC 删除时 PV 和数据一并删除 | 动态供应的默认策略 |
+| `Recycle` | PV 被清理后重新可用（已弃用） | 不推荐使用 |
+
+为确保数据跨 Ship 恢复持久化，请配置 StorageClass 使用 `reclaimPolicy: Retain`：
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ship-storage
+provisioner: <your-provisioner>
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+```
+
+然后设置环境变量 `KUBE_STORAGE_CLASS=ship-storage`。
+
+**注意**：使用默认 StorageClass 或云提供商存储类时，数据可能在 Ship 被永久删除时丢失。
+
+### Docker/Podman 数据持久化
+
+Docker 和 Podman 驱动通过宿主机目录挂载实现数据持久化：
+
+- 数据目录位置：`{SHIP_DATA_DIR}/{ship_id}/`（默认 `~/.shipyard/ships/{ship_id}/`）
+  - `home/` - 挂载到容器 `/home`
+  - `metadata/` - 挂载到容器 `/app/metadata`
+
+**重要行为说明**：
+
+| 操作 | 行为 |
+|------|------|
+| Ship 停止（TTL 过期） | 容器删除，**数据目录保留** |
+| Ship 恢复 | 使用同一数据目录创建新容器 |
+| Ship 永久删除 | 容器删除，**数据目录不自动删除** |
+
+**为什么不自动删除数据目录？**
+
+出于安全考虑，Bay 不会自动删除宿主机上的挂载目录：
+- 防止意外数据丢失
+- 避免权限问题导致删除其他重要文件
+- 用户可以手动备份后再删除
+
+**手动清理数据目录**：
+
+```bash
+# 清理特定 Ship 数据
+rm -rf ~/.shipyard/ships/{ship_id}
+
+# 清理所有 Ship 数据（谨慎使用）
+rm -rf ~/.shipyard/ships/*
+```
+
 ## 容器驱动架构
 
 Bay 使用可插拔的驱动架构来支持不同的容器运行时和部署模式：

@@ -554,6 +554,242 @@ def test_upload_download(ship_id: str) -> bool:
         return False
 
 
+def test_data_persistence() -> bool:
+    """
+    测试数据持久化：验证容器停止后重新启动时数据是否保留。
+
+    测试流程：
+    1. 创建 Ship
+    2. 通过文件系统操作写入测试文件
+    3. 删除 Ship（停止容器，但保留数据目录/PVC）
+    4. 使用相同 Session ID 重新创建 Ship（应该恢复之前的 Ship）
+    5. 验证测试文件仍然存在且内容正确
+    """
+    print_section("测试 17: 数据持久化（容器重启后数据保留）")
+
+    # 使用一个固定的 Session ID 以便测试恢复功能
+    persistence_session_id = f"persistence-test-{uuid.uuid4().hex[:8]}"
+    persistence_headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "X-SESSION-ID": persistence_session_id,
+    }
+
+    test_filename = "persistence_test.txt"
+    test_content = f"Persistence test content - {uuid.uuid4().hex}"
+    ship_id = None
+
+    try:
+        # Step 1: 创建 Ship
+        print("\n步骤 1: 创建 Ship...")
+        payload = {
+            "ttl": 120,
+            "max_session_num": 1,
+            "spec": {"cpus": 0.5, "memory": "256m"},
+        }
+        resp = requests.post(
+            f"{BAY_URL}/ship",
+            headers={**persistence_headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        if resp.status_code != 201:
+            print(f"❌ 创建 Ship 失败: {resp.status_code} - {request_json(resp)}")
+            return False
+
+        data = resp.json()
+        ship_id = data.get("id")
+        print(f"✅ Ship 创建成功: {ship_id}")
+
+        # 等待 Ship 完全就绪
+        print("等待 Ship 完全就绪...")
+        time.sleep(3)
+
+        # Step 2: 写入测试文件
+        print(f"\n步骤 2: 写入测试文件 {test_filename}...")
+        exec_payload = {
+            "type": "fs/write_file",
+            "payload": {
+                "path": test_filename,
+                "content": test_content,
+            },
+        }
+        resp = requests.post(
+            f"{BAY_URL}/ship/{ship_id}/exec",
+            headers={**persistence_headers, "Content-Type": "application/json"},
+            json=exec_payload,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"❌ 写入文件失败: {resp.status_code} - {request_json(resp)}")
+            return False
+        print(f"✅ 文件写入成功")
+
+        # Step 3: 验证文件已写入
+        print(f"\n步骤 3: 验证文件已写入...")
+        exec_payload = {
+            "type": "fs/read_file",
+            "payload": {"path": test_filename},
+        }
+        resp = requests.post(
+            f"{BAY_URL}/ship/{ship_id}/exec",
+            headers={**persistence_headers, "Content-Type": "application/json"},
+            json=exec_payload,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"❌ 读取文件失败: {resp.status_code} - {request_json(resp)}")
+            return False
+        exec_result = resp.json()
+        # ExecResponse 格式: {"success": true, "data": {"content": "...", "path": "...", "size": ...}}
+        read_data = exec_result.get("data", {})
+        actual_content = read_data.get("content")
+        if actual_content != test_content:
+            print(f"❌ 文件内容不匹配: 期望 {test_content!r}, 实际 {actual_content!r}")
+            print(f"   完整响应: {exec_result}")
+            return False
+        print(f"✅ 文件内容验证成功")
+
+        # Step 4: 删除 Ship
+        print(f"\n步骤 4: 删除 Ship {ship_id}...")
+        resp = requests.delete(
+            f"{BAY_URL}/ship/{ship_id}",
+            headers=persistence_headers,
+            timeout=30,
+        )
+        if resp.status_code != 204:
+            print(f"❌ 删除 Ship 失败: {resp.status_code} - {request_json(resp)}")
+            return False
+        print(f"✅ Ship 删除成功")
+
+        # 等待容器完全停止
+        print("等待容器停止...")
+        time.sleep(3)
+
+        # 调试信息：检查 PVC 状态（仅在 Kubernetes 模式下有意义）
+        print("\n调试: 检查 PVC 状态...")
+        try:
+            import subprocess
+            # 查看 PVC
+            result = subprocess.run(
+                ["kubectl", "get", "pvc", "-n", "shipyard", "-o", "wide"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            print(f"PVC 状态:\n{result.stdout}")
+            if result.stderr:
+                print(f"kubectl stderr: {result.stderr}")
+            
+            # 查看 PVC 详细信息
+            pvc_name = f"ship-{ship_id}"
+            result = subprocess.run(
+                ["kubectl", "get", "pvc", pvc_name, "-n", "shipyard", "-o", "yaml"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                # 解析 StorageClass
+                import re
+                sc_match = re.search(r'storageClassName:\s*(\S+)', result.stdout)
+                if sc_match:
+                    print(f"✅ PVC {pvc_name} 使用的 StorageClass: {sc_match.group(1)}")
+                else:
+                    print(f"⚠️ 无法从 PVC 中找到 StorageClass")
+            else:
+                print(f"⚠️ 无法获取 PVC {pvc_name} 详情: {result.stderr}")
+        except FileNotFoundError:
+            print("⚠️ kubectl 不可用，跳过 PVC 检查（可能不是 Kubernetes 模式）")
+        except Exception as e:
+            print(f"⚠️ 检查 PVC 时出错: {e}")
+
+        # Step 5: 使用相同 Session ID 重新创建 Ship
+        print(f"\n步骤 5: 使用相同 Session ID 重新创建 Ship...")
+        payload = {
+            "ttl": 120,
+            "max_session_num": 1,
+            "spec": {"cpus": 0.5, "memory": "256m"},
+        }
+        resp = requests.post(
+            f"{BAY_URL}/ship",
+            headers={**persistence_headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        if resp.status_code != 201:
+            print(f"❌ 重新创建 Ship 失败: {resp.status_code} - {request_json(resp)}")
+            return False
+
+        data = resp.json()
+        new_ship_id = data.get("id")
+        print(f"✅ Ship 恢复成功: {new_ship_id}")
+
+        # 验证是否是同一个 Ship 被恢复
+        if new_ship_id == ship_id:
+            print(f"✅ 确认是同一个 Ship 被恢复 (ID: {ship_id})")
+        else:
+            print(f"⚠️ 创建了新的 Ship (新 ID: {new_ship_id}, 旧 ID: {ship_id})")
+            # 更新 ship_id 用于后续清理
+            ship_id = new_ship_id
+
+        # 等待 Ship 完全就绪
+        print("等待 Ship 完全就绪...")
+        time.sleep(3)
+
+        # Step 6: 验证文件仍然存在
+        print(f"\n步骤 6: 验证文件 {test_filename} 仍然存在...")
+        exec_payload = {
+            "type": "fs/read_file",
+            "payload": {"path": test_filename},
+        }
+        resp = requests.post(
+            f"{BAY_URL}/ship/{ship_id}/exec",
+            headers={**persistence_headers, "Content-Type": "application/json"},
+            json=exec_payload,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"❌ 读取文件失败: {resp.status_code} - {request_json(resp)}")
+            print("❌ 数据持久化测试失败：文件未被保留")
+            return False
+
+        exec_result = resp.json()
+        # ExecResponse 格式: {"success": true, "data": {"content": "...", "path": "...", "size": ...}}
+        read_data = exec_result.get("data", {})
+        actual_content = read_data.get("content")
+        if actual_content != test_content:
+            print(f"❌ 文件内容不匹配: 期望 {test_content!r}, 实际 {actual_content!r}")
+            print(f"   完整响应: {exec_result}")
+            print("❌ 数据持久化测试失败：文件内容不一致")
+            return False
+
+        print(f"✅ 文件内容验证成功")
+        print("\n" + "=" * 50)
+        print("✅ 数据持久化测试通过！")
+        print("=" * 50)
+        return True
+
+    except Exception as exc:
+        print(f"❌ 测试过程中出错: {exc}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    finally:
+        # 清理：删除测试 Ship
+        if ship_id:
+            print(f"\n清理: 删除 Ship {ship_id}...")
+            try:
+                requests.delete(
+                    f"{BAY_URL}/ship/{ship_id}",
+                    headers=persistence_headers,
+                    timeout=30,
+                )
+                print("✅ 清理完成")
+            except Exception as e:
+                print(f"⚠️ 清理时出错: {e}")
+
+
 def test_delete_ship(ship_id: str) -> bool:
     print_section(f"测试 15: /ship/{ship_id} 删除 Ship")
     try:
@@ -638,6 +874,12 @@ def main() -> None:
     test_upload_download(ship_id)
     test_delete_ship(ship_id)
     test_delete_ship_not_found(ship_id)
+
+    # 数据持久化测试（独立的 Ship 生命周期）
+    print("\n" + "-" * 70)
+    print("数据持久化测试")
+    print("-" * 70)
+    test_data_persistence()
 
     print("\n" + "=" * 70)
     print("测试完成!")

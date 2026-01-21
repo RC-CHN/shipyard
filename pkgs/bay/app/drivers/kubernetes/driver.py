@@ -3,6 +3,34 @@ Kubernetes container driver implementation.
 
 This module implements the ContainerDriver interface using Kubernetes API
 to manage Ship containers as Pods with PVC storage.
+
+Data Persistence Notes:
+-----------------------
+This driver uses PVC (PersistentVolumeClaim) for Ship data persistence.
+When a Ship is stopped (TTL expired or manually stopped), only the Pod is
+deleted while the PVC is preserved, allowing the Ship to be restored later
+with its data intact.
+
+**Important**: The actual data persistence behavior depends on the
+underlying PersistentVolume's reclaim policy (configured at StorageClass level):
+
+- `Retain`: PV data is preserved even after PVC deletion. Best for production.
+- `Delete`: PV and data are deleted when PVC is deleted (default for dynamic provisioning).
+- `Recycle`: PV is scrubbed and made available again (deprecated).
+
+To ensure data persistence across Ship restores, configure your StorageClass
+with `reclaimPolicy: Retain`. For dynamic provisioning, this is typically set in
+the StorageClass definition:
+
+    apiVersion: storage.k8s.io/v1
+    kind: StorageClass
+    metadata:
+      name: ship-storage
+    provisioner: <your-provisioner>
+    reclaimPolicy: Retain
+
+When using the default StorageClass or cloud provider storage classes,
+be aware that data may be lost when the PVC is deleted (via delete_ship_data()).
 """
 
 from __future__ import annotations
@@ -231,7 +259,11 @@ class KubernetesDriver(ContainerDriver):
 
     async def stop_ship_container(self, container_id: str) -> bool:
         """
-        Stop and remove a Ship Pod and its PVC.
+        Stop and remove a Ship Pod, but preserve the PVC for data persistence.
+
+        This method only deletes the Pod while keeping the PVC intact,
+        allowing the ship to be restored later with its data preserved.
+        To completely remove a ship including its data, use delete_ship_data().
 
         Args:
             container_id: The Pod name (ship-{ship_id})
@@ -245,16 +277,41 @@ class KubernetesDriver(ContainerDriver):
         assert self.core_api is not None
 
         pod_name = container_id
-        # Extract ship_id from pod name
-        pvc_name = pod_name  # PVC uses same naming convention
 
-        success = True
+        # Only delete Pod, preserve PVC for data persistence
+        success = await self._cleanup_pod(pod_name)
 
-        # Delete Pod
-        success = await self._cleanup_pod(pod_name) and success
+        if success:
+            logger.info(
+                "Pod %s stopped. PVC preserved for potential restoration.", pod_name
+            )
 
-        # Delete PVC
-        success = await self._cleanup_pvc(pvc_name) and success
+        return success
+
+    async def delete_ship_data(self, container_id: str) -> bool:
+        """
+        Permanently delete a Ship's PVC and all its data.
+
+        This method should be called when a ship is being permanently deleted
+        and its data is no longer needed.
+
+        Args:
+            container_id: The Pod name (ship-{ship_id})
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        assert self.core_api is not None
+
+        pvc_name = container_id  # PVC uses same naming convention as Pod
+
+        success = await self._cleanup_pvc(pvc_name)
+
+        if success:
+            logger.info("PVC %s and associated data permanently deleted.", pvc_name)
 
         return success
 

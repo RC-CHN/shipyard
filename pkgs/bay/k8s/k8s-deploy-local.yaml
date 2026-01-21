@@ -86,6 +86,8 @@ data:
   KUBE_NAMESPACE: "shipyard"
   KUBE_PVC_SIZE: "1Gi"
   KUBE_IMAGE_PULL_POLICY: "IfNotPresent"
+  # Use StorageClass with Retain reclaim policy for data persistence
+  KUBE_STORAGE_CLASS: "ship-hostpath-retain"
   DOCKER_IMAGE: "ship:latest"
   ACCESS_TOKEN: "test-token"
   MAX_SHIP_NUM: "10"

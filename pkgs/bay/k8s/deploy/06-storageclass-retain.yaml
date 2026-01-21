@@ -1,0 +1,10 @@
+# StorageClass with Retain policy for Ship data persistence
+# This ensures PV data is preserved when PVC is deleted
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ship-hostpath-retain
+provisioner: docker.io/hostpath
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
