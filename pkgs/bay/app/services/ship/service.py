@@ -199,10 +199,30 @@ class ShipService:
             await self._set_ship_expires_at(ship)
         return ship
 
-    async def delete_ship(self, ship_id: str) -> bool:
-        """Delete ship."""
+    async def delete_ship(self, ship_id: str, permanent: bool = False) -> bool:
+        """
+        Delete/stop a ship.
+
+        By default, this performs a "soft delete" - the container is stopped but
+        the database record is preserved (marked as status=0), allowing the ship
+        to be restored later with its data intact.
+
+        For permanent deletion (including database record), set permanent=True.
+
+        Args:
+            ship_id: The ID of the ship to delete
+            permanent: If True, also delete the database record
+
+        Returns:
+            True if successful, False if ship not found or already stopped
+        """
         ship = await db_service.get_ship(ship_id)
         if not ship:
+            return False
+
+        # For soft delete, return False if ship is already stopped
+        # (cannot "stop" an already stopped ship)
+        if not permanent and ship.status == 0:
             return False
 
         # Cancel cleanup task if exists
@@ -219,8 +239,17 @@ class ShipService:
             except Exception as e:
                 logger.error(f"Failed to stop container for ship {ship_id}: {e}")
 
-        # Delete from database
-        return await db_service.delete_ship(ship_id)
+        if permanent:
+            # Permanent delete: remove from database
+            logger.info(f"Permanently deleting ship {ship_id} from database")
+            return await db_service.delete_ship(ship_id)
+        else:
+            # Soft delete: mark as stopped, keep database record for restore
+            ship.status = 0
+            ship.container_id = None  # Clear container ID since it's stopped
+            await db_service.update_ship(ship)
+            logger.info(f"Ship {ship_id} stopped (soft delete), data preserved for restore")
+            return True
 
     async def extend_ttl(self, ship_id: str, new_ttl: int) -> Optional[Ship]:
         """Extend ship TTL."""

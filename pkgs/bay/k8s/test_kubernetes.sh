@@ -146,6 +146,10 @@ deploy() {
     echo ""
     echo "🚀 部署到 Kubernetes..."
     
+    # 先创建 StorageClass（如果不存在）
+    echo "  创建 StorageClass..."
+    kubectl apply -f "$SCRIPT_DIR/deploy/06-storageclass-retain.yaml" || true
+    
     # 生成本地 YAML
     local yaml_file
     yaml_file=$(generate_local_yaml)

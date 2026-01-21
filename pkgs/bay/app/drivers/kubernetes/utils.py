@@ -291,7 +291,9 @@ def build_pod_manifest(
         for key, value in env.items():
             env_vars.append(V1EnvVar(name=key, value=value))
 
-    # Build container
+    # Build container with volume mounts for persistence
+    # /home - user workspaces (each user has /home/ship_xxx/workspace/)
+    # /app/metadata - session/user mapping for restoration
     container = V1Container(
         name="ship",
         image=image,
@@ -303,8 +305,14 @@ def build_pod_manifest(
         resources=resources if resources else None,
         volume_mounts=[
             V1VolumeMount(
-                name="workspace",
-                mount_path="/workspace",
+                name="data",
+                mount_path="/home",
+                sub_path="home",  # PVC/home -> container /home
+            ),
+            V1VolumeMount(
+                name="data",
+                mount_path="/app/metadata",
+                sub_path="metadata",  # PVC/metadata -> container /app/metadata
             ),
         ],
     )
@@ -324,7 +332,7 @@ def build_pod_manifest(
             containers=[container],
             volumes=[
                 V1Volume(
-                    name="workspace",
+                    name="data",
                     persistent_volume_claim=V1PersistentVolumeClaimVolumeSource(
                         claim_name=pvc_name,
                     ),

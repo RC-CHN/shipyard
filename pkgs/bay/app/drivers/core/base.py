@@ -93,7 +93,12 @@ class ContainerDriver(ABC):
     @abstractmethod
     async def stop_ship_container(self, container_id: str) -> bool:
         """
-        Stop and remove a ship container.
+        Stop and remove a ship container, but preserve data for potential restoration.
+
+        For drivers that support data persistence (e.g., Kubernetes with PVC),
+        this method should only stop the container while keeping the data intact.
+        For drivers without separate data storage (e.g., Docker with host mounts),
+        this may only stop the container.
 
         Args:
             container_id: The ID of the container to stop
@@ -102,6 +107,37 @@ class ContainerDriver(ABC):
             True if successful (or container already removed), False otherwise
         """
         pass
+
+    async def delete_ship_data(self, container_id: str) -> bool:
+        """
+        Permanently delete a ship's persistent data.
+
+        This method should be called when a ship is being permanently deleted
+        and its data is no longer needed.
+
+        **Important Driver-Specific Behavior:**
+
+        - **Docker/Podman drivers**: Default implementation is a NO-OP.
+          Host-mounted directories are NOT automatically deleted to prevent
+          accidental data loss or security issues. If cleanup is needed,
+          administrators should manually remove the ship data directory
+          at `{SHIP_DATA_DIR}/{ship_id}/`.
+
+        - **Kubernetes driver**: Deletes the PVC. The actual data retention
+          depends on the StorageClass reclaim policy:
+          - Retain: Data preserved after PVC deletion
+          - Delete: Data deleted with PVC (default for dynamic provisioning)
+
+        Args:
+            container_id: The ID of the container/ship
+
+        Returns:
+            True if successful (or data already removed), False otherwise
+        """
+        # Default implementation: no-op for drivers with host mounts
+        # This is intentional - deleting host directories automatically
+        # could lead to unintended data loss or security issues.
+        return True
 
     @abstractmethod
     def ship_data_exists(self, ship_id: str) -> bool:
