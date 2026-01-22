@@ -295,6 +295,127 @@ class TestShipOperations:
             assert download_resp.status_code == 200, f"下载失败: {download_resp.status_code}"
             assert download_resp.content == content, "下载内容不匹配"
 
+    def test_filesystem_operations(self, bay_url):
+        """文件系统操作测试（创建、读取、写入、列表、删除）"""
+        with fresh_ship() as (ship_id, headers):
+            headers_with_content_type = {**headers, "Content-Type": "application/json"}
+
+            # 1. 创建文件
+            create_file_data = {
+                "type": "fs/create_file",
+                "payload": {"path": "test_file.txt", "content": "Hello, World!"},
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=create_file_data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"创建文件失败: {resp.text}"
+            result = resp.json()
+            assert result.get("success") is True, f"创建文件操作失败: {result}"
+
+            # 2. 读取文件
+            read_file_data = {
+                "type": "fs/read_file",
+                "payload": {"path": "test_file.txt"},
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=read_file_data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"读取文件失败: {resp.text}"
+            result = resp.json()
+            assert result.get("success") is True, f"读取文件操作失败: {result}"
+            assert result["data"]["content"] == "Hello, World!", "文件内容不匹配"
+
+            # 3. 写入文件
+            write_file_data = {
+                "type": "fs/write_file",
+                "payload": {"path": "test_file.txt", "content": "Updated content!"},
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=write_file_data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"写入文件失败: {resp.text}"
+            result = resp.json()
+            assert result.get("success") is True, f"写入文件操作失败: {result}"
+
+            # 4. 列表目录
+            list_dir_data = {
+                "type": "fs/list_dir",
+                "payload": {"path": "./"},
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=list_dir_data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"列表目录失败: {resp.text}"
+            result = resp.json()
+            assert result.get("success") is True, f"列表目录操作失败: {result}"
+
+            # 5. 删除文件
+            delete_file_data = {
+                "type": "fs/delete_file",
+                "payload": {"path": "test_file.txt"},
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=delete_file_data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"删除文件失败: {resp.text}"
+            result = resp.json()
+            assert result.get("success") is True, f"删除文件操作失败: {result}"
+
+    def test_ipython_operations(self, bay_url):
+        """IPython 操作测试"""
+        with fresh_ship() as (ship_id, headers):
+            headers_with_content_type = {**headers, "Content-Type": "application/json"}
+
+            # 1. 执行简单 Python 代码
+            ipython_data = {
+                "type": "ipython/exec",
+                "payload": {"code": "x = 5 + 3\nprint(f'Result: {x}')", "timeout": 10},
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=ipython_data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"IPython 执行失败: {resp.text}"
+            result = resp.json()
+            assert result.get("success") is True, f"IPython 操作失败: {result}"
+            assert "Result: 8" in result["data"]["output"]["text"], f"IPython 输出不匹配: {result}"
+
+            # 2. 执行带 import 的代码
+            import_data = {
+                "type": "ipython/exec",
+                "payload": {
+                    "code": "import math\nresult = math.sqrt(16)\nprint(f'Square root of 16 is {result}')",
+                    "timeout": 10,
+                },
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=import_data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"IPython import 执行失败: {resp.text}"
+            result = resp.json()
+            assert result.get("success") is True, f"IPython import 操作失败: {result}"
+            assert "Square root of 16 is 4.0" in result["data"]["output"]["text"], f"IPython import 输出不匹配: {result}"
+
 
 @pytest.mark.e2e
 class TestShipDeletion:
@@ -339,6 +460,72 @@ class TestShipDeletion:
             timeout=10,
         )
         assert resp.status_code == 404, f"重复删除未返回 404: {resp.status_code}"
+
+
+@pytest.mark.e2e
+class TestMultipleSessions:
+    """阶段 5.5: 多会话复用测试"""
+
+    def test_multiple_sessions(self, bay_url):
+        """测试 Ship 多会话复用功能
+
+        创建一个 max_session_num=2 的 Ship，然后用不同的 session ID 访问，
+        验证是否可以复用同一个 Ship。
+        """
+        # 创建第一个 session
+        session_id_1 = f"multi-session-test-{uuid.uuid4().hex[:8]}"
+        headers_1 = get_auth_headers(session_id_1)
+
+        # 创建 Ship with max_session_num = 2
+        payload = {
+            "ttl": 600,
+            "max_session_num": 2,
+            "spec": {"cpus": 0.5, "memory": "256m"},
+        }
+
+        resp = requests.post(
+            f"{bay_url}/ship",
+            headers={**headers_1, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        assert resp.status_code == 201, f"创建 Ship 失败: {resp.status_code}"
+
+        ship_data = resp.json()
+        ship_id = ship_data.get("id")
+        assert ship_data.get("current_session_num") == 1, "初始会话数应为 1"
+
+        try:
+            # 等待 Ship 就绪
+            time.sleep(3)
+
+            # 用第二个 session ID 请求
+            session_id_2 = f"multi-session-test-{uuid.uuid4().hex[:8]}"
+            headers_2 = get_auth_headers(session_id_2)
+
+            resp = requests.post(
+                f"{bay_url}/ship",
+                headers={**headers_2, "Content-Type": "application/json"},
+                json=payload,
+                timeout=120,
+            )
+            # 应该成功创建或复用
+            assert resp.status_code == 201, f"第二个会话请求失败: {resp.status_code}"
+
+            reused_ship = resp.json()
+            # 记录是否复用了同一个 Ship
+            if reused_ship.get("id") == ship_id:
+                # 复用了同一个 Ship
+                assert reused_ship.get("current_session_num") == 2, "复用后会话数应为 2"
+            # 如果是新 Ship 也是可以接受的行为
+
+        finally:
+            # 清理
+            requests.delete(
+                f"{bay_url}/ship/{ship_id}",
+                headers=headers_1,
+                timeout=30,
+            )
 
 
 @pytest.mark.e2e

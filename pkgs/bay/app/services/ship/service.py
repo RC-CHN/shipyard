@@ -114,7 +114,7 @@ class ShipService:
                     initial_ttl=request.ttl,
                 )
                 await db_service.create_session_ship(session_ship)
-                await db_service.increment_ship_session_count(available_ship.id)
+                available_ship = await db_service.increment_ship_session_count(available_ship.id)
 
                 # Recalculate ship's TTL based on all sessions' expiration times
                 await self._recalculate_and_schedule_cleanup(available_ship.id)
@@ -177,7 +177,7 @@ class ShipService:
                 initial_ttl=request.ttl,
             )
             await db_service.create_session_ship(session_ship)
-            await db_service.increment_ship_session_count(ship.id)
+            ship = await db_service.increment_ship_session_count(ship.id)
 
             # Schedule TTL cleanup
             await self._schedule_cleanup(ship.id, ship.ttl)

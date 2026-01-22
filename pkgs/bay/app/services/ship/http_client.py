@@ -84,6 +84,7 @@ async def forward_request_to_ship(
             ) as response:
                 if response.status == 200:
                     data = await response.json()
+                    logger.info(f"Ship exec response for {request.type}: {data}")
                     return ExecResponse(success=True, data=data)
                 else:
                     error_text = await response.text()
