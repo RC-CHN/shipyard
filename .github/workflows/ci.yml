@@ -41,7 +41,9 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run tests
-        run: uv run pytest tests/unit
+        env:
+          PYTHONPATH: .
+        run: uv run python -m pytest tests/unit
 
   e2e-bay:
     runs-on: ubuntu-latest

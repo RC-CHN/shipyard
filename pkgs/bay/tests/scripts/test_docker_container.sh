@@ -40,7 +40,7 @@ for i in {1..30}; do
 done
 
 echo "==> [Docker Container] 运行 E2E 测试"
-python -m pytest tests/e2e/ -v
+uv run python -m pytest tests/e2e/ -v
 
 echo "==> [Docker Container] 关闭 docker-compose"
 docker compose -f docker-compose.yml down
