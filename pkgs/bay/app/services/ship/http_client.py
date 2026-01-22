@@ -84,7 +84,31 @@ async def forward_request_to_ship(
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    logger.info(f"Ship exec response for {request.type}: {data}")
+
+                    # Log full response at DEBUG level
+                    logger.debug(f"Full ship exec response for {request.type}: {data}")
+
+                    # Create summary for INFO level to avoid noise and data exposure
+                    summary = {}
+                    if isinstance(data, dict):
+                        # Whitelist specific safe fields
+                        for k in ["status", "exit_code", "execution_count", "success", "error"]:
+                            if k in data:
+                                summary[k] = data[k]
+
+                        # Summarize other fields
+                        for k, v in data.items():
+                            if k not in summary:
+                                if isinstance(v, str):
+                                    summary[f"{k}_len"] = len(v)
+                                elif isinstance(v, (list, dict)):
+                                    summary[f"{k}_size"] = len(v)
+                                else:
+                                    summary[f"{k}_type"] = type(v).__name__
+                    else:
+                        summary = {"type": type(data).__name__}
+
+                    logger.info(f"Ship exec response for {request.type}: {summary}")
                     return ExecResponse(success=True, data=data)
                 else:
                     error_text = await response.text()

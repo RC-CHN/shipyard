@@ -22,6 +22,25 @@ class TestMemoryUtils:
         assert parse_memory_string("512m") == 536870912
         assert parse_memory_string("1g") == 1073741824
 
+    def test_parse_memory_string_invalid(self):
+        """测试 parse_memory_string 函数处理无效输入"""
+        from app.drivers.core.utils import parse_memory_string
+
+        # 无效格式
+        with pytest.raises(ValueError):
+            parse_memory_string("abc")
+        
+        with pytest.raises(ValueError):
+            parse_memory_string("10XZ")
+            
+        # 负数
+        with pytest.raises(ValueError):
+            parse_memory_string("-512Mi")
+            
+        # None
+        with pytest.raises(AttributeError):
+            parse_memory_string(None)
+
     def test_parse_and_enforce_minimum_memory(self):
         """测试 parse_and_enforce_minimum_memory 函数"""
         from app.drivers.core.utils import parse_and_enforce_minimum_memory
