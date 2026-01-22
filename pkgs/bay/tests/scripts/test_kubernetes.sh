@@ -3,7 +3,7 @@
 #
 # 此脚本用于在本地 K8s 集群中测试 Kubernetes 驱动
 # 支持: Docker Desktop Kubernetes, kind, minikube, k3d
-# 使用 test_bay_api.py 进行 API 测试
+# 使用 pytest tests/e2e/ 进行 API 测试
 #
 # 使用方法:
 #   ./test_kubernetes.sh [命令] [集群类型]
@@ -14,8 +14,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SHIP_DIR="$(cd "$PROJECT_ROOT/../ship" && pwd)"
+TESTS_DIR="$PROJECT_ROOT/tests"
+K8S_DIR="$TESTS_DIR/k8s"
 
 # 默认参数
 COMMAND="${1:-all}"
@@ -32,6 +34,8 @@ echo "命令: $COMMAND"
 echo "集群类型: $CLUSTER_TYPE"
 echo "Bay 目录: $PROJECT_ROOT"
 echo "Ship 目录: $SHIP_DIR"
+echo "K8s 配置目录: $K8S_DIR"
+echo "Tests 目录: $TESTS_DIR"
 echo ""
 
 # 检查必要工具
@@ -131,12 +135,12 @@ load_images() {
 
 # 生成使用本地镜像的 YAML
 generate_local_yaml() {
-    local output_file="$SCRIPT_DIR/k8s-deploy-local.yaml"
+    local output_file="$K8S_DIR/k8s-deploy-local.yaml"
     
     sed -e "s|soulter/shipyard-bay:latest|$BAY_IMAGE|g" \
         -e "s|soulter/shipyard-ship:latest|$SHIP_IMAGE|g" \
         -e "s|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|g" \
-        "$SCRIPT_DIR/k8s-deploy.yaml" > "$output_file"
+        "$K8S_DIR/k8s-deploy.yaml" > "$output_file"
     
     echo "$output_file"
 }
@@ -148,7 +152,7 @@ deploy() {
     
     # 先创建 StorageClass（如果不存在）
     echo "  创建 StorageClass..."
-    kubectl apply -f "$SCRIPT_DIR/deploy/06-storageclass-retain.yaml" || true
+    kubectl apply -f "$K8S_DIR/storageclass-retain.yaml" || true
     
     # 生成本地 YAML
     local yaml_file
@@ -210,9 +214,9 @@ run_tests() {
     
     # 运行测试脚本
     echo ""
-    echo "  运行 test_bay_api.py..."
+    echo "  运行 pytest tests/e2e/..."
     cd "$PROJECT_ROOT"
-    uv run python test_bay_api.py || true
+    python -m pytest tests/e2e/ -v || true
     
     # 清理端口转发
     kill $PF_PID 2>/dev/null || true
@@ -249,7 +253,7 @@ cleanup() {
     kubectl delete clusterrolebinding shipyard-bay-namespace-reader --ignore-not-found=true
     
     # 删除生成的本地 YAML
-    rm -f "$SCRIPT_DIR/k8s-deploy-local.yaml"
+    rm -f "$K8S_DIR/k8s-deploy-local.yaml"
     
     echo "✅ 清理完成"
 }
