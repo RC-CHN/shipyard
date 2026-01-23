@@ -60,10 +60,12 @@ async def _set_kernel_working_directory(km: AsyncKernelManager, working_dir: str
     kc = km.client()
     try:
         # 执行初始化代码，包括中文字体配置
-        init_code = """
+        init_code = f"""
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import shutil, os
+
+os.chdir({working_dir!r})
 
 cache_dir = os.path.expanduser("~/.cache/matplotlib")
 if os.path.exists(cache_dir):

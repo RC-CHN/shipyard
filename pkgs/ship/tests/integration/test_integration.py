@@ -1,9 +1,16 @@
+import os
 import pytest
 import docker
 import requests
 import time
 import uuid
 from pathlib import Path
+
+existing_no_proxy = os.environ.get("NO_PROXY", "")
+if "127.0.0.1" not in existing_no_proxy and "localhost" not in existing_no_proxy:
+    os.environ["NO_PROXY"] = (
+        f"{existing_no_proxy},127.0.0.1,localhost".strip(",")
+    )
 
 
 @pytest.fixture(scope="session")
@@ -63,6 +70,7 @@ def ship_container(docker_client, ship_image):
 
     # 等待服务启动
     max_retries = 30
+    startup_error = None
     for i in range(max_retries):
         try:
             response = requests.get(f"{base_url}/health", timeout=5)
@@ -77,7 +85,14 @@ def ship_container(docker_client, ship_image):
             # 打印容器日志用于调试
             logs = container.logs().decode("utf-8")
             print(f"Container logs:\n{logs}")
-            raise RuntimeError("Ship container failed to start")
+            startup_error = RuntimeError("Ship container failed to start")
+
+    if startup_error:
+        try:
+            container.stop(timeout=10)
+        except Exception:
+            pass
+        raise startup_error
 
     yield {"container": container, "base_url": base_url, "port": host_port}
 

@@ -13,15 +13,19 @@ import grp
 import shutil
 import shlex
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
 # 存储session到用户名的映射
 session_users: Dict[str, str] = {}
+
+# 后台进程注册表：session_id -> {process_id -> BackgroundProcessEntry}
+_background_processes: Dict[str, Dict[str, "BackgroundProcessEntry"]] = {}
 
 # 用户ID范围（从10000开始，避免与系统用户冲突）
 USER_ID_START = 10000
@@ -44,7 +48,81 @@ class ProcessResult:
     stderr: str
     return_code: Optional[int] = None
     pid: Optional[int] = None
+    process_id: Optional[str] = None
     error: Optional[str] = None
+
+
+class BackgroundProcessEntry:
+    """后台进程条目"""
+
+    def __init__(
+        self,
+        process_id: str,
+        pid: int,
+        command: str,
+        process: asyncio.subprocess.Process,
+    ):
+        self.process_id = process_id
+        self.pid = pid
+        self.command = command
+        self.process = process
+
+    @property
+    def status(self) -> str:
+        """获取进程状态"""
+        if self.process.returncode is None:
+            return "running"
+        elif self.process.returncode == 0:
+            return "completed"
+        else:
+            return "failed"
+
+
+def generate_process_id() -> str:
+    """生成进程ID"""
+    return str(uuid.uuid4())[:8]
+
+
+def register_background_process(
+    session_id: str,
+    process_id: str,
+    pid: int,
+    command: str,
+    process: asyncio.subprocess.Process,
+) -> None:
+    """注册后台进程"""
+    if session_id not in _background_processes:
+        _background_processes[session_id] = {}
+    _background_processes[session_id][process_id] = BackgroundProcessEntry(
+        process_id=process_id,
+        pid=pid,
+        command=command,
+        process=process,
+    )
+    logger.info(
+        "Registered background process: session=%s process_id=%s pid=%s",
+        session_id,
+        process_id,
+        pid,
+    )
+
+
+def get_session_background_processes(session_id: str) -> List[Dict]:
+    """获取指定 session 的所有后台进程"""
+    if session_id not in _background_processes:
+        return []
+
+    processes = []
+    for entry in _background_processes[session_id].values():
+        processes.append(
+            {
+                "process_id": entry.process_id,
+                "pid": entry.pid,
+                "command": entry.command,
+                "status": entry.status,
+            }
+        )
+    return processes
 
 
 def save_session_users():
@@ -399,7 +477,7 @@ async def get_or_create_session_user(session_id: str) -> str:
 
 
 async def run_as_user(
-    username: str,
+    session_id: str,
     command: str,
     cwd: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
@@ -409,7 +487,7 @@ async def run_as_user(
 ) -> ProcessResult:
     """以指定用户身份运行命令"""
     try:
-        username = await get_or_create_session_user(username)
+        username = await get_or_create_session_user(session_id)
         user_info = await UserManager.get_user_info(username)
         user_home = user_info["home_dir"]
 
@@ -443,27 +521,56 @@ async def run_as_user(
         # 使用 sudo 切换用户执行命令
         # sudo_command = f"sudo -u {username} -H bash -c 'cd {working_dir} && {command}'"
 
+        env_args = []
+        if env:
+            for key, value in env.items():
+                env_args.append(f"{key}={value}")
+
         if shell:
-            process = await asyncio.create_subprocess_exec(
+            sudo_args = [
                 "sudo",
                 "-u",
                 username,
                 "-H",
-                "bash",
-                "-lc",
-                f"cd {shlex.quote(str(working_dir))} && {command}",
+            ]
+            if env_args:
+                sudo_args.extend(["env", *env_args])
+            sudo_args.extend(
+                [
+                    "bash",
+                    "-lc",
+                    f"cd {shlex.quote(str(working_dir))} && {command}",
+                ]
+            )
+            logger.debug(
+                "Shell exec args: %s env_keys=%s",
+                sudo_args,
+                list(env.keys()) if env else [],
+            )
+            process = await asyncio.create_subprocess_exec(
+                *sudo_args,
                 env=process_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         else:
             args = shlex.split(command)
-            process = await asyncio.create_subprocess_exec(
+            sudo_args = [
                 "sudo",
                 "-u",
                 username,
                 "-H",
-                *args,
+            ]
+            if env_args:
+                sudo_args.extend(["env", *env_args])
+            sudo_args.extend(args)
+            logger.debug(
+                "Exec args: %s env_keys=%s",
+                sudo_args,
+                list(env.keys()) if env else [],
+            )
+            process = await asyncio.create_subprocess_exec(
+                *sudo_args,
                 env=process_env,
                 cwd=str(working_dir),
                 stdout=asyncio.subprocess.PIPE,
@@ -471,12 +578,30 @@ async def run_as_user(
             )
 
         if background:
+            process_id = generate_process_id()
+            # 注册后台进程（使用原始的 session_id，即调用时传入的 username 参数值）
+            # 注意：run_as_user 的第一个参数实际上是 session_id
+            register_background_process(
+                session_id=session_id,
+                process_id=process_id,
+                pid=process.pid,
+                command=command,
+                process=process,
+            )
+            logger.info(
+                "Background shell exec started: user=%s pid=%s process_id=%s cmd=%s",
+                username,
+                process.pid,
+                process_id,
+                command,
+            )
             return ProcessResult(
                 success=True,
                 return_code=0,
                 stdout="",
                 stderr="",
                 pid=process.pid,
+                process_id=process_id,
             )
         else:
             try:
@@ -489,6 +614,7 @@ async def run_as_user(
                     stdout=stdout.decode().strip(),
                     stderr=stderr.decode().strip(),
                     pid=process.pid,
+                    process_id=None,
                 )
             except asyncio.TimeoutError:
                 process.kill()
@@ -499,10 +625,18 @@ async def run_as_user(
                     stdout="",
                     stderr="",
                     pid=process.pid,
+                    process_id=None,
                     error="Command timed out",
                 )
 
     except Exception as e:
+        logger.exception(
+            "Shell exec failed: session_id=%s cmd=%s cwd=%s env_keys=%s",
+            session_id,
+            command,
+            cwd,
+            list(env.keys()) if env else [],
+        )
         return ProcessResult(
             success=False,
             return_code=-1,
@@ -510,4 +644,5 @@ async def run_as_user(
             stderr="",
             error=str(e),
             pid=None,
+            process_id=None,
         )
