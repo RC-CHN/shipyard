@@ -44,7 +44,11 @@ def ship_image(docker_client):
 
     # 测试完成后清理镜像
     print("Cleaning up ship image...")
-    docker_client.images.remove(image.id, force=True)
+    try:
+        docker_client.images.remove(image.id, force=True)
+    except docker.errors.ImageNotFound:
+        # 镜像可能已经被其他进程删除
+        print(f"Image {image.id} already removed, skipping cleanup")
 
 
 @pytest.fixture(scope="session")

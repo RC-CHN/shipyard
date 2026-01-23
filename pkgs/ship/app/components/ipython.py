@@ -38,13 +38,14 @@ async def get_or_create_kernel(session_id: str) -> AsyncKernelManager:
         # 创建会话工作目录
         workspace_dir = await get_session_workspace(session_id)
 
-        # 创建新的内核管理器
+        # 创建新的内核管理器，在启动时设置工作目录
         km: AsyncKernelManager = AsyncKernelManager()
-        await km.start_kernel()
+        # 通过 cwd 参数在启动时设置工作目录，避免动态代码执行
+        await km.start_kernel(cwd=str(workspace_dir))
         kernel_managers[session_id] = km
 
-        # 在内核启动后立即设置工作目录
-        await _set_kernel_working_directory(km, str(workspace_dir))
+        # 执行静态初始化代码（字体配置等）
+        await _init_kernel_matplotlib(km)
 
     return kernel_managers[session_id]
 
@@ -55,17 +56,11 @@ async def ensure_kernel_running(km: AsyncKernelManager):
         await km.start_kernel()
 
 
-async def _set_kernel_working_directory(km: AsyncKernelManager, working_dir: str):
-    """设置内核的工作目录"""
-    kc = km.client()
-    try:
-        # 执行初始化代码，包括中文字体配置
-        init_code = f"""
+# 静态初始化代码（matplotlib 字体配置等，不包含任何动态内容）
+_KERNEL_INIT_CODE = """
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import shutil, os
-
-os.chdir({working_dir!r})
 
 cache_dir = os.path.expanduser("~/.cache/matplotlib")
 if os.path.exists(cache_dir):
@@ -77,10 +72,21 @@ font_prop = fm.FontProperties(fname=font_path, index=2)
 plt.rcParams['font.family'] = font_prop.get_name()
 plt.rcParams['axes.unicode_minus'] = False
 """
-        kc.execute(init_code, silent=True, store_history=False)
 
+
+async def _init_kernel_matplotlib(km: AsyncKernelManager):
+    """初始化内核的 matplotlib 配置
+    
+    执行静态初始化代码来配置中文字体等。
+    工作目录已在 start_kernel(cwd=...) 时设置。
+    """
+    kc = km.client()
+    try:
+        # 执行静态初始化代码（不包含任何动态内容）
+        kc.execute(_KERNEL_INIT_CODE, silent=True, store_history=False)
+        
         # 等待执行完成
-        timeout = 10  # 增加超时时间以便字体配置完成
+        timeout = 10
         while True:
             try:
                 msg = await asyncio.wait_for(kc.get_iopub_msg(), timeout=timeout)
@@ -93,7 +99,7 @@ plt.rcParams['axes.unicode_minus'] = False
                 break
 
     except Exception as e:
-        print(f"Warning: Failed to set working directory: {e}")
+        print(f"Warning: Failed to initialize matplotlib: {e}")
 
 
 async def execute_code_in_kernel(
