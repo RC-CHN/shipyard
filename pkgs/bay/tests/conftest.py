@@ -1,8 +1,73 @@
-import pytest
-import docker
+"""
+Bay 测试配置
+
+包含通用的 pytest fixtures 和配置。
+"""
+
+import os
 import time
-import requests
+import uuid
 from pathlib import Path
+
+import docker
+import pytest
+import requests
+
+
+# ============================================================================
+# pytest 标记注册
+# ============================================================================
+
+def pytest_configure(config):
+    """注册自定义标记"""
+    config.addinivalue_line(
+        "markers", "e2e: 端到端测试，需要 Bay 服务运行"
+    )
+    config.addinivalue_line(
+        "markers", "integration: 集成测试，需要 Docker 环境"
+    )
+    config.addinivalue_line(
+        "markers", "unit: 单元测试，不需要外部依赖"
+    )
+
+
+# ============================================================================
+# 通用配置
+# ============================================================================
+
+# 配置 - 支持从环境变量覆盖
+BAY_URL = os.getenv("BAY_URL", "http://localhost:8156")
+ACCESS_TOKEN = os.getenv("BAY_ACCESS_TOKEN", "secret-token")
+
+
+def get_auth_headers(session_id: str | None = None) -> dict[str, str]:
+    """获取认证请求头"""
+    sid = session_id or str(uuid.uuid4())
+    return {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "X-SESSION-ID": sid,
+    }
+
+
+# ============================================================================
+# 通用 fixtures
+# ============================================================================
+
+@pytest.fixture(scope="module")
+def bay_url() -> str:
+    """返回 Bay 服务 URL"""
+    return BAY_URL
+
+
+@pytest.fixture(scope="module")
+def auth_headers() -> dict[str, str]:
+    """返回认证请求头"""
+    return get_auth_headers()
+
+
+# ============================================================================
+# Docker/Integration 测试 fixtures
+# ============================================================================
 
 
 @pytest.fixture(scope="session")

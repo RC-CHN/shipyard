@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'pkgs/bay/**'
+      - 'pkgs/ship/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'pkgs/bay/**'
+      - 'pkgs/ship/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  test-bay:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkgs/bay
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run tests
+        env:
+          PYTHONPATH: .
+        run: uv run python -m pytest tests/unit
+
+  e2e-bay:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkgs/bay
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run E2E tests (Docker Container)
+        run: |
+          chmod +x tests/scripts/test_docker_container.sh
+          ./tests/scripts/test_docker_container.sh
+
+  test-ship:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkgs/ship
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      # Assuming ship has tests, if not this step might fail or do nothing.
+      # Based on file list, ship has tests/integration but maybe not unit tests yet.
+      # We'll try to run pytest if tests directory exists.
+      - name: Run tests
+        run: |
+          if [ -d "tests" ]; then
+            uv run pytest tests
+          else
+            echo "No tests directory found for ship"
+          fi
