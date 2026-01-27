@@ -34,12 +34,15 @@
 ### 3. MCP Server 集成
 
 **问题背景：**
-- Claude Desktop、Cursor 等工具支持 MCP 协议
-- 需要提供标准化的集成方式
+- MCP (Model Context Protocol) 已成为行业标准（2025年12月捐赠给 Linux Foundation）
+- OpenAI (2025年3月)、Google DeepMind (2025年4月) 均已采用
+- Claude Desktop、ChatGPT Desktop、Cursor、VS Code 等工具支持 MCP 协议
 
 **解决方案：**
-- 实现基于 stdio 传输的 MCP 服务器
+- 使用官方 MCP Python SDK (`mcp` 包) 实现标准 MCP 服务器
+- 支持 stdio 和 streamable-http 两种传输方式
 - 提供 Python 执行、Shell 执行、文件操作等工具
+- 发布 npm 包 `@anthropic/shipyard-mcp` 用于快速安装
 
 ---
 
@@ -494,6 +497,71 @@ result = await session.python.exec(code)
 # 查询历史
 history = await session.get_execution_history()
 ```
+
+### 4. 使用 MCP Server
+
+**方式一：npm 包安装（推荐）**
+```bash
+# 全局安装
+npm install -g @anthropic/shipyard-mcp
+
+# 运行
+SHIPYARD_TOKEN=your-token shipyard-mcp
+```
+
+**方式二：Python 模块运行**
+```bash
+cd pkgs/bay
+pip install -e .
+python -m app.mcp.run
+```
+
+**方式三：HTTP 模式部署**
+```bash
+shipyard-mcp --transport http --port 8000
+```
+
+---
+
+## MCP 客户端配置
+
+### Claude Desktop
+
+`~/.config/claude/claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "shipyard": {
+      "command": "shipyard-mcp",
+      "env": {
+        "SHIPYARD_ENDPOINT": "http://localhost:8156",
+        "SHIPYARD_TOKEN": "your-access-token"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+`~/.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "shipyard": {
+      "command": "shipyard-mcp",
+      "env": {
+        "SHIPYARD_ENDPOINT": "http://localhost:8156",
+        "SHIPYARD_TOKEN": "your-access-token"
+      }
+    }
+  }
+}
+```
+
+### ChatGPT Desktop / VS Code
+
+参考 `pkgs/mcp-server/README.md` 获取详细配置说明。
 
 ---
 

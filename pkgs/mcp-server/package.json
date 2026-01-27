@@ -1,0 +1,50 @@
+{
+  "name": "shipyard-mcp",
+  "version": "1.0.0",
+  "description": "Shipyard MCP Server - Execute Python and shell commands in isolated sandboxes via MCP protocol",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sandbox",
+    "code-execution",
+    "ai-agents",
+    "claude",
+    "chatgpt",
+    "cursor",
+    "shipyard",
+    "anthropic",
+    "openai"
+  ],
+  "homepage": "https://github.com/AstrBotDevs/shipyard",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AstrBotDevs/shipyard.git",
+    "directory": "pkgs/mcp-server"
+  },
+  "license": "MIT",
+  "author": "AstrBot Team",
+  "type": "module",
+  "bin": {
+    "shipyard-mcp": "./bin/shipyard-mcp.js"
+  },
+  "files": [
+    "bin",
+    "python",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "echo \"Tests not implemented yet\"",
+    "prepublishOnly": "echo 'Ready to publish'"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
