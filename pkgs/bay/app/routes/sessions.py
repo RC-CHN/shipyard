@@ -6,6 +6,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 from app.database import db_service
 from app.auth import verify_token
+from app.models import ExecutionHistoryResponse, ExecutionHistoryEntry
 
 router = APIRouter()
 
@@ -217,10 +218,6 @@ async def delete_session(session_id: str, token: str = Depends(verify_token)):
         await session.commit()
     finally:
         await session.close()
-
-
-# Execution History API
-from app.models import ExecutionHistoryResponse, ExecutionHistoryEntry
 
 
 @router.get("/sessions/{session_id}/history", response_model=ExecutionHistoryResponse)

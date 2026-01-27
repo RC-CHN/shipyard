@@ -126,7 +126,7 @@ class ShipService:
             logger.info(f"Warm pool ship {ship.id} created and ready")
             return ship
 
-        except Exception as e:
+        except Exception:
             await db_service.delete_ship(ship.id)
             raise
 
@@ -683,7 +683,7 @@ class ShipService:
         # Ship is stopped, restore it
         try:
             # Create a minimal CreateShipRequest for restoration
-            from app.models import CreateShipRequest, ShipSpec
+            from app.models import CreateShipRequest
             request = CreateShipRequest(ttl=ttl)
             
             return await self._restore_ship(ship, request, session_id)
