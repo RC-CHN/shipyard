@@ -1,4 +1,4 @@
-# @anthropic/shipyard-mcp
+# shipyard-mcp
 
 Shipyard MCP Server - Execute Python and shell commands in isolated sandboxes via Model Context Protocol.
 
@@ -17,7 +17,7 @@ This package provides an MCP (Model Context Protocol) server that enables AI ass
 ## Installation
 
 ```bash
-npm install -g @anthropic/shipyard-mcp
+npm install -g shipyard-mcp
 ```
 
 **Prerequisites:**
@@ -106,6 +106,7 @@ Add to VS Code settings:
 | `list_files` | List directory contents |
 | `install_package` | Install Python packages via pip |
 | `get_sandbox_info` | Get current sandbox information |
+| `get_execution_history` | View past executions |
 
 ## CLI Options
 
@@ -125,6 +126,31 @@ Options:
 |----------|-------------|---------|
 | `SHIPYARD_ENDPOINT` | Bay API URL | `http://localhost:8156` |
 | `SHIPYARD_TOKEN` | Access token | (required) |
+| `SHIPYARD_SANDBOX_TTL` | Sandbox TTL in seconds | `1800` (30 min) |
+
+## Transport Modes
+
+### stdio (Default)
+
+Standard I/O transport for local integration with desktop apps. One process = one session = one sandbox.
+
+```bash
+shipyard-mcp
+```
+
+### HTTP (Streamable HTTP)
+
+HTTP transport for remote/hosted deployments. **Each MCP client session gets its own isolated sandbox.**
+
+```bash
+shipyard-mcp --transport http --port 8000
+```
+
+In HTTP mode:
+- Each client connection gets a unique session ID
+- Sessions are isolated - Client A cannot see Client B's variables or files
+- Sandboxes are automatically cleaned up via TTL when clients disconnect
+- TTL is renewed on each tool call to keep active sessions alive
 
 ## Architecture
 
@@ -138,6 +164,7 @@ Options:
                                                    ▼
                                           ┌─────────────────┐
                                           │  Python Server  │
+                                          │   (FastMCP)     │
                                           └────────┬────────┘
                                                    │
                                                    │ HTTP/REST
@@ -153,12 +180,33 @@ Options:
                                           └─────────────────┘
 ```
 
+## Session Isolation (HTTP Mode)
+
+When running in HTTP mode, each MCP client session is completely isolated:
+
+```
+Client A (mcp-session-aaa) ──► Sandbox A (ship-111)
+    │
+    │ execute_python("x = 123")  ✓
+    │
+Client B (mcp-session-bbb) ──► Sandbox B (ship-222)
+    │
+    │ execute_python("print(x)")  ✗ NameError (isolated!)
+```
+
+This ensures:
+- **State isolation**: Different clients have separate Python variables
+- **File isolation**: File operations are container-specific
+- **Security**: One client cannot access another's data
+- **Resource management**: Each sandbox has its own TTL
+
 ## Security
 
 - Each session gets a dedicated, isolated container
 - Code execution is sandboxed
 - Containers have configurable network access
 - Resources are automatically cleaned up via TTL
+- HTTP mode provides per-client session isolation
 
 ## Development
 
