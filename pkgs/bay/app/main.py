@@ -6,7 +6,7 @@ from app.config import settings
 from app.database import db_service
 from app.drivers import initialize_driver, close_driver
 from app.services.status import status_checker
-from app.routes import health, ships, stat
+from app.routes import health, ships, stat, sessions
 
 # Configure logging
 logging.basicConfig(
@@ -85,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, tags=["health"])
     app.include_router(ships.router, tags=["ships"])
     app.include_router(stat.router, tags=["stat"])
+    app.include_router(sessions.router, tags=["sessions"])
 
     return app
 

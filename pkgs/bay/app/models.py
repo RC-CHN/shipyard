@@ -5,10 +5,18 @@ from datetime import datetime, timezone
 import uuid
 
 
+# Ship status constants
+class ShipStatus:
+    """Ship status constants"""
+    STOPPED = 0   # Ship is stopped, container not running
+    RUNNING = 1   # Ship is running, container active
+    CREATING = 2  # Ship is being created, container not yet ready
+
+
 # Database Models
 class ShipBase(SQLModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
-    status: int = Field(default=1, description="1: running, 0: stopped")
+    status: int = Field(default=ShipStatus.CREATING, description="0: stopped, 1: running, 2: creating")
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
@@ -125,6 +133,12 @@ class ExtendTTLRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ttl: int = Field(..., gt=0, description="New TTL in seconds")
+
+
+class StartShipRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ttl: int = Field(default=3600, gt=0, description="TTL in seconds for the started ship")
 
 
 class ErrorResponse(BaseModel):

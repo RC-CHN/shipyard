@@ -50,5 +50,8 @@ for i in {1..30}; do
   fi
 done
 
+echo "==> [Docker Host] 运行单元测试"
+python -m pytest tests/unit/ -v
+
 echo "==> [Docker Host] 运行 E2E 测试"
 python -m pytest tests/e2e/ -v

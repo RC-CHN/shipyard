@@ -5,9 +5,13 @@ Bay 测试配置
 """
 
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
+
+# 添加 app 路径以便测试导入
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import docker
 import pytest

@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "tomli>=2.0.0",
     "kubernetes-asyncio>=34.3.3",
+    "websocket-client>=1.9.0",
 ]
 
 [project.optional-dependencies]

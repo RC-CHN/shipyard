@@ -61,16 +61,23 @@ _KERNEL_INIT_CODE = """
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import shutil, os
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
+# 清除字体缓存以确保字体更新生效
 cache_dir = os.path.expanduser("~/.cache/matplotlib")
 if os.path.exists(cache_dir):
     shutil.rmtree(cache_dir)
 
-font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-font_prop = fm.FontProperties(fname=font_path, index=2)
+# 重建字体列表
+fm._load_fontmanager(try_read_cache=False)
 
-plt.rcParams['font.family'] = font_prop.get_name()
-plt.rcParams['axes.unicode_minus'] = False
+# 配置中文字体
+font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+if os.path.exists(font_path):
+    # 使用 sans-serif 字体族并设置回退
+    plt.rcParams['font.sans-serif'] = ['Noto Sans CJK SC', 'Noto Sans CJK JP', 'Noto Sans CJK TC', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
 """
 
 

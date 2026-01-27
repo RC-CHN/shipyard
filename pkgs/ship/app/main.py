@@ -4,6 +4,7 @@ from .components.filesystem import router as fs_router
 from .components.ipython import router as ipython_router
 from .components.shell import router as shell_router
 from .components.upload import router as upload_router
+from .components.term import router as term_router
 from .components.user_manager import UserManager
 import logging
 import tomli
@@ -34,6 +35,7 @@ app.include_router(fs_router, prefix="/fs", tags=["filesystem"])
 app.include_router(ipython_router, prefix="/ipython", tags=["ipython"])
 app.include_router(shell_router, prefix="/shell", tags=["shell"])
 app.include_router(upload_router, tags=["upload"])
+app.include_router(term_router, prefix="/term", tags=["terminal"])
 
 
 @app.get("/")

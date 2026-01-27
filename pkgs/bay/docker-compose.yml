@@ -4,7 +4,10 @@ services:
   shipyard:
     image: soulter/shipyard-bay:latest
     ports:
+      # API port (public, for agent access)
       - "8156:8156"
+      # Dashboard port (optional, can be hidden behind NAT)
+      - "8157:8157"
     environment:
       - PORT=8156
       - DATABASE_URL=sqlite+aiosqlite:///./data/bay.db

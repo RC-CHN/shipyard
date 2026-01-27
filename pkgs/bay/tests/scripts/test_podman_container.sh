@@ -69,5 +69,8 @@ for i in {1..30}; do
   fi
 done
 
+echo "==> [Podman Container] 运行单元测试"
+python -m pytest tests/unit/ -v
+
 echo "==> [Podman Container] 运行 E2E 测试"
 python -m pytest tests/e2e/ -v
