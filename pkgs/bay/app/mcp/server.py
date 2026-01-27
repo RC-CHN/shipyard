@@ -159,9 +159,20 @@ async def get_or_create_sandbox(ctx: Context) -> Sandbox:
         return sandbox
 
 
-def _format_exec_result(result: ExecResult) -> str:
+def _format_exec_result(
+    result: ExecResult,
+    include_code: bool = False,
+) -> str:
     """Format execution result for LLM consumption."""
     parts = []
+
+    # Always include execution_id if available
+    if result.execution_id:
+        parts.append(f"execution_id: {result.execution_id}")
+
+    # Include code if requested
+    if include_code and result.code:
+        parts.append(f"Code:\n{result.code}")
 
     if result.stdout:
         parts.append(f"Output:\n{result.stdout}")
@@ -171,6 +182,10 @@ def _format_exec_result(result: ExecResult) -> str:
         parts.append(f"Result: {result.result}")
     if result.exit_code != 0:
         parts.append(f"Exit code: {result.exit_code}")
+
+    # Include execution time if code is included
+    if include_code and result.execution_time_ms:
+        parts.append(f"Execution time: {result.execution_time_ms}ms")
 
     if not parts:
         return "Executed successfully (no output)"
@@ -187,6 +202,9 @@ def _format_exec_result(result: ExecResult) -> str:
 async def execute_python(
     code: str,
     timeout: int = 30,
+    include_code: bool = False,
+    description: str = None,
+    tags: str = None,
     ctx: Context = None,
 ) -> str:
     """Execute Python code in an isolated sandbox.
@@ -197,13 +215,18 @@ async def execute_python(
     Args:
         code: Python code to execute
         timeout: Execution timeout in seconds (default: 30)
+        include_code: If True, include the executed code and execution_id in the response.
+                      Useful for recording skills or analyzing execution.
+        description: Human-readable description of what this code does (for skill library)
+        tags: Comma-separated tags for categorization (e.g., 'data-processing,pandas')
 
     Returns:
-        Execution result including stdout, stderr, and any return value
+        Execution result including stdout, stderr, and any return value.
+        When include_code=True, also includes execution_id, code, and execution time.
     """
     sandbox = await get_or_create_sandbox(ctx)
-    result = await sandbox.python.exec(code, timeout=timeout)
-    return _format_exec_result(result)
+    result = await sandbox.python.exec(code, timeout=timeout, description=description, tags=tags)
+    return _format_exec_result(result, include_code=include_code)
 
 
 @mcp.tool()
@@ -211,6 +234,9 @@ async def execute_shell(
     command: str,
     cwd: str = None,
     timeout: int = 30,
+    include_code: bool = False,
+    description: str = None,
+    tags: str = None,
     ctx: Context = None,
 ) -> str:
     """Execute a shell command in an isolated sandbox.
@@ -222,13 +248,18 @@ async def execute_shell(
         command: Shell command to execute
         cwd: Working directory (relative to workspace, optional)
         timeout: Execution timeout in seconds (default: 30)
+        include_code: If True, include the executed command and execution_id in the response.
+                      Useful for recording skills or analyzing execution.
+        description: Human-readable description of what this command does (for skill library)
+        tags: Comma-separated tags for categorization (e.g., 'file-ops,cleanup')
 
     Returns:
-        Command output including stdout and stderr
+        Command output including stdout and stderr.
+        When include_code=True, also includes execution_id, command, and execution time.
     """
     sandbox = await get_or_create_sandbox(ctx)
-    result = await sandbox.shell.exec(command, cwd=cwd, timeout=timeout)
-    return _format_exec_result(result)
+    result = await sandbox.shell.exec(command, cwd=cwd, timeout=timeout, description=description, tags=tags)
+    return _format_exec_result(result, include_code=include_code)
 
 
 @mcp.tool()
@@ -377,6 +408,134 @@ async def get_execution_history(
     return "\n".join(lines)
 
 
+@mcp.tool()
+async def get_execution(
+    execution_id: str,
+    ctx: Context = None,
+) -> str:
+    """Get a specific execution record by ID.
+
+    Use this to retrieve the full details of a previous execution,
+    including the complete code, output, and timing information.
+
+    Args:
+        execution_id: The execution ID (returned by execute_python/execute_shell
+                      when include_code=True)
+
+    Returns:
+        Full execution record including code, success status, output, and timing.
+    """
+    sandbox = await get_or_create_sandbox(ctx)
+    try:
+        entry = await sandbox.get_execution(execution_id)
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+    lines = [f"Execution ID: {entry.get('id', execution_id)}"]
+    lines.append(f"Type: {entry.get('exec_type', 'unknown')}")
+    lines.append(f"Success: {entry.get('success', False)}")
+
+    code = entry.get("code") or entry.get("command")
+    if code:
+        lines.append(f"\nCode:\n{code}")
+
+    if entry.get("execution_time_ms"):
+        lines.append(f"\nExecution time: {entry.get('execution_time_ms')}ms")
+
+    if entry.get("created_at"):
+        lines.append(f"Created at: {entry.get('created_at')}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def get_last_execution(
+    exec_type: str = None,
+    ctx: Context = None,
+) -> str:
+    """Get the most recent execution for this session.
+
+    Useful for retrieving the full record of what was just executed,
+    including the complete code for analysis or skill recording.
+
+    Args:
+        exec_type: Filter by 'python' or 'shell' (optional)
+
+    Returns:
+        Full execution record including code, success status, output, and timing.
+    """
+    sandbox = await get_or_create_sandbox(ctx)
+    try:
+        entry = await sandbox.get_last_execution(exec_type=exec_type)
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+    lines = [f"Execution ID: {entry.get('id')}"]
+    lines.append(f"Type: {entry.get('exec_type', 'unknown')}")
+    lines.append(f"Success: {entry.get('success', False)}")
+
+    code = entry.get("code") or entry.get("command")
+    if code:
+        lines.append(f"\nCode:\n{code}")
+
+    if entry.get("execution_time_ms"):
+        lines.append(f"\nExecution time: {entry.get('execution_time_ms')}ms")
+
+    if entry.get("created_at"):
+        lines.append(f"Created at: {entry.get('created_at')}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def annotate_execution(
+    execution_id: str,
+    description: str = None,
+    tags: str = None,
+    notes: str = None,
+    ctx: Context = None,
+) -> str:
+    """Annotate an execution record with metadata.
+
+    Use this to add descriptions, tags, or notes to an execution after
+    it has been recorded. Useful for skill library construction.
+
+    At least one of description, tags, or notes must be provided.
+
+    Args:
+        execution_id: The execution ID to annotate
+        description: Human-readable description of what this execution does
+        tags: Comma-separated tags for categorization (e.g., 'data-processing,pandas')
+        notes: Agent notes/annotations about this execution (e.g., learnings, issues)
+
+    Returns:
+        Updated execution record.
+    """
+    if description is None and tags is None and notes is None:
+        return "Error: At least one of description, tags, or notes must be provided"
+
+    sandbox = await get_or_create_sandbox(ctx)
+    try:
+        entry = await sandbox.annotate_execution(
+            execution_id=execution_id,
+            description=description,
+            tags=tags,
+            notes=notes,
+        )
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+    lines = [f"Execution ID: {entry.get('id', execution_id)} updated"]
+    if entry.get("description"):
+        lines.append(f"Description: {entry.get('description')}")
+    if entry.get("tags"):
+        lines.append(f"Tags: {entry.get('tags')}")
+    if entry.get("notes"):
+        lines.append(f"Notes: {entry.get('notes')}")
+
+    return "\n".join(lines)
+
+
 # =============================================================================
 # MCP Resources
 # =============================================================================
@@ -391,14 +550,17 @@ Shipyard provides secure, isolated Python and shell execution environments
 for AI agents and assistants.
 
 Available tools:
-- execute_python: Run Python code
-- execute_shell: Run shell commands
+- execute_python: Run Python code (supports description, tags for skill library)
+- execute_shell: Run shell commands (supports description, tags for skill library)
 - read_file: Read file contents
 - write_file: Write to files
 - list_files: List directory contents
 - install_package: Install Python packages via pip
 - get_sandbox_info: Get current sandbox information
 - get_execution_history: View past executions
+- get_execution: Get specific execution by ID
+- get_last_execution: Get most recent execution
+- annotate_execution: Add notes/tags to an execution record
 
 Each session gets a dedicated container with:
 - Full Python environment (3.13+)

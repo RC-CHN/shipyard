@@ -78,6 +78,19 @@ class ExecutionHistoryBase(SQLModel):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
     )
+    # Skill library metadata fields
+    description: Optional[str] = Field(
+        default=None,
+        description="Human-readable description of what this execution does"
+    )
+    tags: Optional[str] = Field(
+        default=None,
+        description="Comma-separated tags for categorization (e.g., 'data-processing,pandas')"
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Agent notes/annotations about this execution"
+    )
 
 
 class ExecutionHistory(ExecutionHistoryBase, table=True):
@@ -139,6 +152,10 @@ class ExecResponse(BaseModel):
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    execution_id: Optional[str] = Field(
+        default=None,
+        description="Execution history ID for this operation (only for python/shell exec)"
+    )
 
 
 class ExtendTTLRequest(BaseModel):
@@ -186,6 +203,10 @@ class ExecutionHistoryEntry(BaseModel):
     success: bool
     execution_time_ms: Optional[int] = None
     created_at: datetime
+    # Skill library metadata fields
+    description: Optional[str] = None
+    tags: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class ExecutionHistoryResponse(BaseModel):

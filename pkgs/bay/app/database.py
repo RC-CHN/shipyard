@@ -380,6 +380,8 @@ class DatabaseService:
         code: Optional[str] = None,
         command: Optional[str] = None,
         execution_time_ms: Optional[int] = None,
+        description: Optional[str] = None,
+        tags: Optional[str] = None,
     ) -> ExecutionHistory:
         """Record an execution in history."""
         history = ExecutionHistory(
@@ -389,6 +391,8 @@ class DatabaseService:
             command=command,
             success=success,
             execution_time_ms=execution_time_ms,
+            description=description,
+            tags=tags,
         )
         session = self.get_session()
         try:
@@ -434,6 +438,83 @@ class DatabaseService:
             entries = list(result.scalars().all())
 
             return entries, total
+        finally:
+            await session.close()
+
+    async def get_execution_by_id(
+        self,
+        session_id: str,
+        execution_id: str,
+    ) -> Optional[ExecutionHistory]:
+        """Get a specific execution record by ID."""
+        session = self.get_session()
+        try:
+            statement = select(ExecutionHistory).where(
+                ExecutionHistory.session_id == session_id,
+                ExecutionHistory.id == execution_id,
+            )
+            result = await session.execute(statement)
+            return result.scalar_one_or_none()
+        finally:
+            await session.close()
+
+    async def get_last_execution(
+        self,
+        session_id: str,
+        exec_type: Optional[str] = None,
+    ) -> Optional[ExecutionHistory]:
+        """Get the most recent execution for a session."""
+        session = self.get_session()
+        try:
+            conditions = [ExecutionHistory.session_id == session_id]
+            if exec_type:
+                conditions.append(ExecutionHistory.exec_type == exec_type)
+
+            statement = (
+                select(ExecutionHistory)
+                .where(*conditions)
+                .order_by(ExecutionHistory.created_at.desc())
+                .limit(1)
+            )
+            result = await session.execute(statement)
+            return result.scalar_one_or_none()
+        finally:
+            await session.close()
+
+    async def update_execution_history(
+        self,
+        session_id: str,
+        execution_id: str,
+        description: Optional[str] = None,
+        tags: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Optional[ExecutionHistory]:
+        """Update metadata for an execution history record.
+
+        Only updates fields that are provided (not None).
+        """
+        session = self.get_session()
+        try:
+            statement = select(ExecutionHistory).where(
+                ExecutionHistory.session_id == session_id,
+                ExecutionHistory.id == execution_id,
+            )
+            result = await session.execute(statement)
+            history = result.scalar_one_or_none()
+
+            if history:
+                if description is not None:
+                    history.description = description
+                if tags is not None:
+                    history.tags = tags
+                if notes is not None:
+                    history.notes = notes
+
+                session.add(history)
+                await session.commit()
+                await session.refresh(history)
+
+            return history
         finally:
             await session.close()
 

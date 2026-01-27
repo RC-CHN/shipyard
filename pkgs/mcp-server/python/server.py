@@ -55,6 +55,7 @@ if not SDK_AVAILABLE:
         exit_code: int = 0
         execution_time_ms: int = 0
         code: str = ""
+        execution_id: Optional[str] = None  # ID for precise history lookup
 
     class Sandbox:
         def __init__(self, endpoint: str = None, token: str = None, ttl: int = 3600, session_id: str = None):
@@ -124,6 +125,54 @@ if not SDK_AVAILABLE:
                     return await resp.json()
                 return {"entries": [], "total": 0}
 
+        async def get_execution(self, execution_id: str) -> dict:
+            """Get a specific execution record by ID."""
+            async with self._http.get(
+                f"{self.endpoint}/sessions/{self.session_id}/history/{execution_id}"
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                elif resp.status == 404:
+                    raise RuntimeError(f"Execution {execution_id} not found")
+                error = await resp.text()
+                raise RuntimeError(f"Failed to get execution: {error}")
+
+        async def get_last_execution(self, exec_type: str = None) -> dict:
+            """Get the most recent execution for this session."""
+            params = {}
+            if exec_type:
+                params["exec_type"] = exec_type
+            async with self._http.get(
+                f"{self.endpoint}/sessions/{self.session_id}/history/last",
+                params=params
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                elif resp.status == 404:
+                    raise RuntimeError("No execution history found")
+                error = await resp.text()
+                raise RuntimeError(f"Failed to get last execution: {error}")
+
+        async def annotate_execution(self, execution_id: str, description: str = None, tags: str = None, notes: str = None) -> dict:
+            """Annotate an execution record with metadata."""
+            payload = {}
+            if description is not None:
+                payload["description"] = description
+            if tags is not None:
+                payload["tags"] = tags
+            if notes is not None:
+                payload["notes"] = notes
+            async with self._http.patch(
+                f"{self.endpoint}/sessions/{self.session_id}/history/{execution_id}",
+                json=payload
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                elif resp.status == 404:
+                    raise RuntimeError(f"Execution {execution_id} not found")
+                error = await resp.text()
+                raise RuntimeError(f"Failed to annotate execution: {error}")
+
         @property
         def ship_id(self):
             return self._ship_id
@@ -137,23 +186,34 @@ if not SDK_AVAILABLE:
     class _PythonExec:
         def __init__(self, sandbox):
             self._s = sandbox
-        async def exec(self, code: str, timeout: int = 30) -> ExecResult:
-            r = await self._s._exec("ipython/exec", {"code": code, "timeout": timeout})
+        async def exec(self, code: str, timeout: int = 30, description: str = None, tags: str = None) -> ExecResult:
+            p = {"code": code, "timeout": timeout}
+            if description:
+                p["description"] = description
+            if tags:
+                p["tags"] = tags
+            r = await self._s._exec("ipython/exec", p)
             d = r.get("data", r)
             return ExecResult(d.get("success", True), d.get("stdout", ""), d.get("stderr", ""),
-                              d.get("result"), 0, d.get("execution_time_ms", 0), d.get("code", code))
+                              d.get("result"), 0, d.get("execution_time_ms", 0), d.get("code", code),
+                              r.get("execution_id"))
 
     class _ShellExec:
         def __init__(self, sandbox):
             self._s = sandbox
-        async def exec(self, command: str, cwd: str = None, timeout: int = 30) -> ExecResult:
+        async def exec(self, command: str, cwd: str = None, timeout: int = 30, description: str = None, tags: str = None) -> ExecResult:
             p = {"command": command, "timeout": timeout}
             if cwd:
                 p["cwd"] = cwd
+            if description:
+                p["description"] = description
+            if tags:
+                p["tags"] = tags
             r = await self._s._exec("shell/exec", p)
             d = r.get("data", r)
             return ExecResult(d.get("exit_code", 0) == 0, d.get("stdout", ""), d.get("stderr", ""),
-                              None, d.get("exit_code", 0), d.get("execution_time_ms", 0), d.get("command", command))
+                              None, d.get("exit_code", 0), d.get("execution_time_ms", 0), d.get("command", command),
+                              r.get("execution_id"))
 
     class _FileSystem:
         def __init__(self, sandbox):
@@ -168,9 +228,18 @@ if not SDK_AVAILABLE:
             return r.get("data", r).get("entries", [])
 
 
-def _format_result(result: ExecResult) -> str:
+def _format_exec_result(result: ExecResult, include_code: bool = False) -> str:
     """Format execution result for LLM consumption."""
     parts = []
+
+    # Always include execution_id if available
+    if result.execution_id:
+        parts.append(f"execution_id: {result.execution_id}")
+
+    # Include code if requested
+    if include_code and result.code:
+        parts.append(f"Code:\n{result.code}")
+
     if result.stdout:
         parts.append(f"Output:\n{result.stdout}")
     if result.stderr:
@@ -179,6 +248,11 @@ def _format_result(result: ExecResult) -> str:
         parts.append(f"Result: {result.result}")
     if result.exit_code != 0:
         parts.append(f"Exit code: {result.exit_code}")
+
+    # Include execution time if code is included
+    if include_code and result.execution_time_ms:
+        parts.append(f"Execution time: {result.execution_time_ms}ms")
+
     return "\n\n".join(parts) if parts else "Executed successfully (no output)"
 
 
@@ -260,18 +334,35 @@ if FASTMCP_AVAILABLE:
             return sandbox
 
     @mcp.tool()
-    async def execute_python(code: str, timeout: int = 30, ctx: Context = None) -> str:
-        """Execute Python code in an isolated sandbox."""
+    async def execute_python(code: str, timeout: int = 30, include_code: bool = False, description: str = None, tags: str = None, ctx: Context = None) -> str:
+        """Execute Python code in an isolated sandbox.
+
+        Args:
+            code: Python code to execute
+            timeout: Execution timeout in seconds (default: 30)
+            include_code: If True, include the executed code and execution_id in the response.
+            description: Human-readable description of what this code does (for skill library)
+            tags: Comma-separated tags for categorization (e.g., 'data-processing,pandas')
+        """
         sandbox = await get_or_create_sandbox(ctx)
-        result = await sandbox.python.exec(code, timeout=timeout)
-        return _format_result(result)
+        result = await sandbox.python.exec(code, timeout=timeout, description=description, tags=tags)
+        return _format_exec_result(result, include_code=include_code)
 
     @mcp.tool()
-    async def execute_shell(command: str, cwd: str = None, timeout: int = 30, ctx: Context = None) -> str:
-        """Execute a shell command in an isolated sandbox."""
+    async def execute_shell(command: str, cwd: str = None, timeout: int = 30, include_code: bool = False, description: str = None, tags: str = None, ctx: Context = None) -> str:
+        """Execute a shell command in an isolated sandbox.
+
+        Args:
+            command: Shell command to execute
+            cwd: Working directory (relative to workspace, optional)
+            timeout: Execution timeout in seconds (default: 30)
+            include_code: If True, include the executed command and execution_id in the response.
+            description: Human-readable description of what this command does (for skill library)
+            tags: Comma-separated tags for categorization (e.g., 'file-ops,cleanup')
+        """
         sandbox = await get_or_create_sandbox(ctx)
-        result = await sandbox.shell.exec(command, cwd=cwd, timeout=timeout)
-        return _format_result(result)
+        result = await sandbox.shell.exec(command, cwd=cwd, timeout=timeout, description=description, tags=tags)
+        return _format_exec_result(result, include_code=include_code)
 
     @mcp.tool()
     async def read_file(path: str, ctx: Context = None) -> str:
@@ -341,7 +432,107 @@ if FASTMCP_AVAILABLE:
             status = "✓" if entry.get("success") else "✗"
             exec_t = entry.get("exec_type", "?")
             time_ms = entry.get("execution_time_ms", 0)
-            lines.append(f"  {status} [{exec_t}] {time_ms}ms")
+            code = entry.get("code", "")[:50]  # Truncate long code
+            if len(entry.get("code", "")) > 50:
+                code += "..."
+            lines.append(f"  {status} [{exec_t}] {time_ms}ms: {code}")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def get_execution(execution_id: str, ctx: Context = None) -> str:
+        """Get a specific execution record by ID.
+
+        Use this to retrieve the full details of a previous execution,
+        including the complete code, output, and timing information.
+
+        Args:
+            execution_id: The execution ID (returned by execute_python/execute_shell
+                          when include_code=True)
+        """
+        sandbox = await get_or_create_sandbox(ctx)
+        try:
+            entry = await sandbox.get_execution(execution_id)
+        except RuntimeError as e:
+            return f"Error: {e}"
+
+        lines = [f"Execution ID: {entry.get('id', execution_id)}"]
+        lines.append(f"Type: {entry.get('exec_type', 'unknown')}")
+        lines.append(f"Success: {entry.get('success', False)}")
+
+        code = entry.get("code") or entry.get("command")
+        if code:
+            lines.append(f"\nCode:\n{code}")
+
+        if entry.get("execution_time_ms"):
+            lines.append(f"\nExecution time: {entry.get('execution_time_ms')}ms")
+
+        if entry.get("created_at"):
+            lines.append(f"Created at: {entry.get('created_at')}")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def get_last_execution(exec_type: str = None, ctx: Context = None) -> str:
+        """Get the most recent execution for this session.
+
+        Useful for retrieving the full record of what was just executed,
+        including the complete code for analysis or skill recording.
+
+        Args:
+            exec_type: Filter by 'python' or 'shell' (optional)
+        """
+        sandbox = await get_or_create_sandbox(ctx)
+        try:
+            entry = await sandbox.get_last_execution(exec_type=exec_type)
+        except RuntimeError as e:
+            return f"Error: {e}"
+
+        lines = [f"Execution ID: {entry.get('id')}"]
+        lines.append(f"Type: {entry.get('exec_type', 'unknown')}")
+        lines.append(f"Success: {entry.get('success', False)}")
+
+        code = entry.get("code") or entry.get("command")
+        if code:
+            lines.append(f"\nCode:\n{code}")
+
+        if entry.get("execution_time_ms"):
+            lines.append(f"\nExecution time: {entry.get('execution_time_ms')}ms")
+
+        if entry.get("created_at"):
+            lines.append(f"Created at: {entry.get('created_at')}")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def annotate_execution(execution_id: str, description: str = None, tags: str = None, notes: str = None, ctx: Context = None) -> str:
+        """Annotate an execution record with metadata.
+
+        Use this to add descriptions, tags, or notes to an execution after
+        it has been recorded. Useful for skill library construction.
+
+        Args:
+            execution_id: The execution ID to annotate
+            description: Human-readable description of what this execution does
+            tags: Comma-separated tags for categorization
+            notes: Agent notes/annotations about this execution
+        """
+        if description is None and tags is None and notes is None:
+            return "Error: At least one of description, tags, or notes must be provided"
+
+        sandbox = await get_or_create_sandbox(ctx)
+        try:
+            entry = await sandbox.annotate_execution(execution_id, description, tags, notes)
+        except RuntimeError as e:
+            return f"Error: {e}"
+
+        lines = [f"Execution ID: {entry.get('id', execution_id)} updated"]
+        if entry.get("description"):
+            lines.append(f"Description: {entry.get('description')}")
+        if entry.get("tags"):
+            lines.append(f"Tags: {entry.get('tags')}")
+        if entry.get("notes"):
+            lines.append(f"Notes: {entry.get('notes')}")
 
         return "\n".join(lines)
 
@@ -354,14 +545,18 @@ Shipyard provides secure, isolated Python and shell execution environments
 for AI agents and assistants.
 
 Available tools:
-- execute_python: Run Python code
-- execute_shell: Run shell commands
+- execute_python: Run Python code (supports description, tags for skill library)
+- execute_shell: Run shell commands (supports description, tags for skill library)
 - read_file: Read file contents
 - write_file: Write to files
 - list_files: List directory contents
 - install_package: Install Python packages via pip
 - get_sandbox_info: Get current sandbox information
 - get_execution_history: View past executions
+- get_execution: Get specific execution by ID
+- get_last_execution: Get most recent execution
+- annotate_execution: Add notes/tags to an execution record
+- get_last_execution: Get most recent execution
 
 Each session gets a dedicated container with:
 - Full Python environment (3.13+)
@@ -404,11 +599,13 @@ class ShipyardMCPServer:
             {"name": "execute_python", "description": "Execute Python code in sandbox",
              "inputSchema": {"type": "object", "properties": {
                  "code": {"type": "string", "description": "Python code"},
-                 "timeout": {"type": "integer", "default": 30}}, "required": ["code"]}},
+                 "timeout": {"type": "integer", "default": 30},
+                 "include_code": {"type": "boolean", "default": False, "description": "Include code and execution_id in response"}}, "required": ["code"]}},
             {"name": "execute_shell", "description": "Execute shell command in sandbox",
              "inputSchema": {"type": "object", "properties": {
                  "command": {"type": "string", "description": "Shell command"},
-                 "cwd": {"type": "string"}, "timeout": {"type": "integer", "default": 30}},
+                 "cwd": {"type": "string"}, "timeout": {"type": "integer", "default": 30},
+                 "include_code": {"type": "boolean", "default": False, "description": "Include command and execution_id in response"}},
                  "required": ["command"]}},
             {"name": "read_file", "description": "Read file from sandbox",
              "inputSchema": {"type": "object", "properties": {
@@ -428,16 +625,28 @@ class ShipyardMCPServer:
              "inputSchema": {"type": "object", "properties": {
                  "exec_type": {"type": "string"}, "success_only": {"type": "boolean"},
                  "limit": {"type": "integer", "default": 50}}}},
+            {"name": "get_execution", "description": "Get specific execution by ID",
+             "inputSchema": {"type": "object", "properties": {
+                 "execution_id": {"type": "string", "description": "Execution ID"}}, "required": ["execution_id"]}},
+            {"name": "get_last_execution", "description": "Get most recent execution",
+             "inputSchema": {"type": "object", "properties": {
+                 "exec_type": {"type": "string", "description": "Filter by python or shell"}}}},
+            {"name": "annotate_execution", "description": "Annotate an execution with metadata",
+             "inputSchema": {"type": "object", "properties": {
+                 "execution_id": {"type": "string", "description": "Execution ID"},
+                 "description": {"type": "string", "description": "Description of execution"},
+                 "tags": {"type": "string", "description": "Comma-separated tags"},
+                 "notes": {"type": "string", "description": "Agent notes"}}, "required": ["execution_id"]}},
         ]
 
     async def call_tool(self, name: str, args: dict) -> dict:
         try:
             if name == "execute_python":
                 result = await self.sandbox.python.exec(args["code"], args.get("timeout", 30))
-                text = _format_result(result)
+                text = _format_exec_result(result, include_code=args.get("include_code", False))
             elif name == "execute_shell":
                 result = await self.sandbox.shell.exec(args["command"], args.get("cwd"), args.get("timeout", 30))
-                text = _format_result(result)
+                text = _format_exec_result(result, include_code=args.get("include_code", False))
             elif name == "read_file":
                 text = await self.sandbox.fs.read(args["path"])
             elif name == "write_file":
@@ -465,8 +674,56 @@ class ShipyardMCPServer:
                     lines = [f"History ({history.get('total', 0)} total):"]
                     for e in entries:
                         s = "✓" if e.get("success") else "✗"
-                        lines.append(f"  {s} [{e.get('exec_type', '?')}] {e.get('execution_time_ms', 0)}ms")
+                        code = e.get("code", "")[:50]
+                        if len(e.get("code", "")) > 50:
+                            code += "..."
+                        lines.append(f"  {s} [{e.get('exec_type', '?')}] {e.get('execution_time_ms', 0)}ms: {code}")
                     text = "\n".join(lines)
+            elif name == "get_execution":
+                try:
+                    entry = await self.sandbox.get_execution(args["execution_id"])
+                    lines = [f"Execution ID: {entry.get('id', args['execution_id'])}"]
+                    lines.append(f"Type: {entry.get('exec_type', 'unknown')}")
+                    lines.append(f"Success: {entry.get('success', False)}")
+                    code = entry.get("code") or entry.get("command")
+                    if code:
+                        lines.append(f"\nCode:\n{code}")
+                    if entry.get("execution_time_ms"):
+                        lines.append(f"\nExecution time: {entry.get('execution_time_ms')}ms")
+                    text = "\n".join(lines)
+                except RuntimeError as e:
+                    text = f"Error: {e}"
+            elif name == "get_last_execution":
+                try:
+                    entry = await self.sandbox.get_last_execution(args.get("exec_type"))
+                    lines = [f"Execution ID: {entry.get('id')}"]
+                    lines.append(f"Type: {entry.get('exec_type', 'unknown')}")
+                    lines.append(f"Success: {entry.get('success', False)}")
+                    code = entry.get("code") or entry.get("command")
+                    if code:
+                        lines.append(f"\nCode:\n{code}")
+                    if entry.get("execution_time_ms"):
+                        lines.append(f"\nExecution time: {entry.get('execution_time_ms')}ms")
+                    text = "\n".join(lines)
+                except RuntimeError as e:
+                    text = f"Error: {e}"
+            elif name == "annotate_execution":
+                if not args.get("description") and not args.get("tags") and not args.get("notes"):
+                    text = "Error: At least one of description, tags, or notes must be provided"
+                else:
+                    try:
+                        entry = await self.sandbox.annotate_execution(
+                            args["execution_id"], args.get("description"), args.get("tags"), args.get("notes"))
+                        lines = [f"Execution ID: {entry.get('id', args['execution_id'])} updated"]
+                        if entry.get("description"):
+                            lines.append(f"Description: {entry.get('description')}")
+                        if entry.get("tags"):
+                            lines.append(f"Tags: {entry.get('tags')}")
+                        if entry.get("notes"):
+                            lines.append(f"Notes: {entry.get('notes')}")
+                        text = "\n".join(lines)
+                    except RuntimeError as e:
+                        text = f"Error: {e}"
             else:
                 return {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True}
             return {"content": [{"type": "text", "text": text}], "isError": False}

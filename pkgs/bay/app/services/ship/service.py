@@ -381,15 +381,22 @@ class ShipService:
             code = request.payload.get("code") if request.payload and exec_type == "python" else None
             command = request.payload.get("command") if request.payload and exec_type == "shell" else None
             execution_time_ms = result.data.get("execution_time_ms") if result.data else None
+            # Extract optional metadata from payload
+            description = request.payload.get("description") if request.payload else None
+            tags = request.payload.get("tags") if request.payload else None
 
-            await db_service.create_execution_history(
+            history = await db_service.create_execution_history(
                 session_id=session_id,
                 exec_type=exec_type,
                 success=result.success,
                 code=code,
                 command=command,
                 execution_time_ms=execution_time_ms,
+                description=description,
+                tags=tags,
             )
+            # Attach execution_id to response
+            result.execution_id = history.id
 
         # Extend TTL after successful operation
         if result.success:

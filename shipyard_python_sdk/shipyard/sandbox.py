@@ -36,6 +36,7 @@ class ExecResult:
     exit_code: int = 0
     execution_time_ms: int = 0
     code: str = ""
+    execution_id: Optional[str] = None  # ID for precise history lookup
 
 
 class PythonExecutor:
@@ -44,9 +45,28 @@ class PythonExecutor:
     def __init__(self, sandbox: "Sandbox"):
         self._sandbox = sandbox
 
-    async def exec(self, code: str, timeout: int = 30) -> ExecResult:
-        """Execute Python code in the sandbox."""
-        result = await self._sandbox._exec("ipython/exec", {"code": code, "timeout": timeout})
+    async def exec(
+        self,
+        code: str,
+        timeout: int = 30,
+        description: Optional[str] = None,
+        tags: Optional[str] = None,
+    ) -> ExecResult:
+        """Execute Python code in the sandbox.
+
+        Args:
+            code: Python code to execute
+            timeout: Execution timeout in seconds
+            description: Human-readable description of what this code does
+            tags: Comma-separated tags for categorization
+        """
+        payload: Dict[str, Any] = {"code": code, "timeout": timeout}
+        if description:
+            payload["description"] = description
+        if tags:
+            payload["tags"] = tags
+
+        result = await self._sandbox._exec("ipython/exec", payload)
         data = result.get("data", result)
         return ExecResult(
             success=data.get("success", True),
@@ -55,6 +75,7 @@ class PythonExecutor:
             result=data.get("result"),
             execution_time_ms=data.get("execution_time_ms", 0),
             code=data.get("code", code),
+            execution_id=result.get("execution_id"),
         )
 
 
@@ -65,12 +86,29 @@ class ShellExecutor:
         self._sandbox = sandbox
 
     async def exec(
-        self, command: str, cwd: Optional[str] = None, timeout: int = 30
+        self,
+        command: str,
+        cwd: Optional[str] = None,
+        timeout: int = 30,
+        description: Optional[str] = None,
+        tags: Optional[str] = None,
     ) -> ExecResult:
-        """Execute shell command in the sandbox."""
+        """Execute shell command in the sandbox.
+
+        Args:
+            command: Shell command to execute
+            cwd: Working directory (optional)
+            timeout: Execution timeout in seconds
+            description: Human-readable description of what this command does
+            tags: Comma-separated tags for categorization
+        """
         payload: Dict[str, Any] = {"command": command, "timeout": timeout}
         if cwd:
             payload["cwd"] = cwd
+        if description:
+            payload["description"] = description
+        if tags:
+            payload["tags"] = tags
 
         result = await self._sandbox._exec("shell/exec", payload)
         data = result.get("data", result)
@@ -81,6 +119,7 @@ class ShellExecutor:
             exit_code=data.get("exit_code", 0),
             execution_time_ms=data.get("execution_time_ms", 0),
             code=data.get("command", command),
+            execution_id=result.get("execution_id"),
         )
 
 
@@ -265,6 +304,107 @@ class Sandbox:
             else:
                 error = await resp.text()
                 raise RuntimeError(f"Failed to get history: {error}")
+
+    async def get_execution(self, execution_id: str) -> Dict[str, Any]:
+        """
+        Get a specific execution record by ID.
+
+        Args:
+            execution_id: The execution history ID
+
+        Returns:
+            Dict with execution details including code, success, output, etc.
+        """
+        if not self._http:
+            raise RuntimeError("Sandbox not started.")
+
+        async with self._http.get(
+            f"{self.endpoint}/sessions/{self.session_id}/history/{execution_id}",
+        ) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            elif resp.status == 404:
+                raise RuntimeError(f"Execution {execution_id} not found")
+            else:
+                error = await resp.text()
+                raise RuntimeError(f"Failed to get execution: {error}")
+
+    async def get_last_execution(
+        self,
+        exec_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get the most recent execution for this session.
+
+        Args:
+            exec_type: Filter by 'python' or 'shell' (optional)
+
+        Returns:
+            Dict with execution details including code, success, output, etc.
+        """
+        if not self._http:
+            raise RuntimeError("Sandbox not started.")
+
+        params: Dict[str, Any] = {}
+        if exec_type:
+            params["exec_type"] = exec_type
+
+        async with self._http.get(
+            f"{self.endpoint}/sessions/{self.session_id}/history/last",
+            params=params,
+        ) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            elif resp.status == 404:
+                raise RuntimeError("No execution history found")
+            else:
+                error = await resp.text()
+                raise RuntimeError(f"Failed to get last execution: {error}")
+
+    async def annotate_execution(
+        self,
+        execution_id: str,
+        description: Optional[str] = None,
+        tags: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Annotate an execution record with metadata.
+
+        Use this to add descriptions, tags, or notes to an execution after
+        it has been recorded. Useful for skill library construction.
+
+        Args:
+            execution_id: The execution history ID
+            description: Human-readable description of what this execution does
+            tags: Comma-separated tags for categorization
+            notes: Agent notes/annotations about this execution
+
+        Returns:
+            Dict with updated execution details
+        """
+        if not self._http:
+            raise RuntimeError("Sandbox not started.")
+
+        payload: Dict[str, Any] = {}
+        if description is not None:
+            payload["description"] = description
+        if tags is not None:
+            payload["tags"] = tags
+        if notes is not None:
+            payload["notes"] = notes
+
+        async with self._http.patch(
+            f"{self.endpoint}/sessions/{self.session_id}/history/{execution_id}",
+            json=payload,
+        ) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            elif resp.status == 404:
+                raise RuntimeError(f"Execution {execution_id} not found")
+            else:
+                error = await resp.text()
+                raise RuntimeError(f"Failed to annotate execution: {error}")
 
     @property
     def ship_id(self) -> Optional[str]:
