@@ -190,3 +190,4 @@ pkgs/bay/tests/k8s/k8s-deploy-local.yaml
 .kilocode/
 openspec/
 AGENTS.md
+plans/mydoc/
