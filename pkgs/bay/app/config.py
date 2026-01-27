@@ -15,6 +15,20 @@ class Settings(BaseSettings):
         default="wait", description="Behavior when max ships reached"
     )
 
+    # Warm Pool settings
+    warm_pool_enabled: bool = Field(
+        default=True, description="Enable warm pool for faster ship allocation"
+    )
+    warm_pool_min_size: int = Field(
+        default=2, description="Minimum number of ships to keep in the warm pool"
+    )
+    warm_pool_max_size: int = Field(
+        default=5, description="Maximum number of ships in the warm pool"
+    )
+    warm_pool_replenish_interval: int = Field(
+        default=30, description="Interval in seconds to check and replenish the warm pool"
+    )
+
     # Authentication
     access_token: str = Field(
         default="secret-token", description="Access token for ship operations"

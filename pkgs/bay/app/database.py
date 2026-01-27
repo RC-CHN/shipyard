@@ -186,25 +186,21 @@ class DatabaseService:
         finally:
             await session.close()
 
-    async def find_available_ship(self, session_id: str) -> Optional[Ship]:
-        """Find an available ship that can accept a new session"""
+    async def find_ship_for_session(self, session_id: str) -> Optional[Ship]:
+        """Find a running ship that belongs to this session (1:1 binding)."""
         session = self.get_session()
         try:
-            # Find ships that have available session slots (only RUNNING ships)
-            statement = select(Ship).where(
-                Ship.status == ShipStatus.RUNNING, Ship.current_session_num < Ship.max_session_num
+            # With 1:1 binding, each session has exactly one ship
+            statement = (
+                select(Ship)
+                .join(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    SessionShip.session_id == session_id,
+                    Ship.status == ShipStatus.RUNNING,
+                )
             )
             result = await session.execute(statement)
-            ships = list(result.scalars().all())
-
-            # Check if this session already has access to any ship
-            for ship in ships:
-                existing_session = await self.get_session_ship(session_id, ship.id)
-                if existing_session:
-                    return ship
-
-            # Return the first available ship
-            return ships[0] if ships else None
+            return result.scalars().first()
         finally:
             await session.close()
 
@@ -253,44 +249,6 @@ class DatabaseService:
             result = await session.execute(statement)
             # Use scalars().first() instead of scalar_one_or_none() to handle multiple results
             return result.scalars().first()
-        finally:
-            await session.close()
-
-    async def increment_ship_session_count(self, ship_id: str) -> Optional[Ship]:
-        """Increment the current session count for a ship"""
-        session = self.get_session()
-        try:
-            statement = select(Ship).where(Ship.id == ship_id)
-            result = await session.execute(statement)
-            ship = result.scalar_one_or_none()
-
-            if ship:
-                ship.current_session_num += 1
-                ship.updated_at = datetime.now(timezone.utc)
-                session.add(ship)
-                await session.commit()
-                await session.refresh(ship)
-
-            return ship
-        finally:
-            await session.close()
-
-    async def decrement_ship_session_count(self, ship_id: str) -> Optional[Ship]:
-        """Decrement the current session count for a ship"""
-        session = self.get_session()
-        try:
-            statement = select(Ship).where(Ship.id == ship_id)
-            result = await session.execute(statement)
-            ship = result.scalar_one_or_none()
-
-            if ship and ship.current_session_num > 0:
-                ship.current_session_num -= 1
-                ship.updated_at = datetime.now(timezone.utc)
-                session.add(ship)
-                await session.commit()
-                await session.refresh(ship)
-
-            return ship
         finally:
             await session.close()
 
@@ -374,6 +332,42 @@ class DatabaseService:
                 await session.commit()
             
             return updated_count
+        finally:
+            await session.close()
+
+    async def find_warm_pool_ship(self) -> Optional[Ship]:
+        """Find an available ship from the warm pool (running ship with no session)."""
+        session = self.get_session()
+        try:
+            # Find running ships that have no session attached
+            statement = (
+                select(Ship)
+                .outerjoin(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    Ship.status == ShipStatus.RUNNING,
+                    SessionShip.id == None,  # noqa: E711
+                )
+                .order_by(Ship.created_at.asc())  # Oldest first (FIFO)
+            )
+            result = await session.execute(statement)
+            return result.scalars().first()
+        finally:
+            await session.close()
+
+    async def count_warm_pool_ships(self) -> int:
+        """Count ships in the warm pool (running ships with no session)."""
+        session = self.get_session()
+        try:
+            statement = (
+                select(Ship)
+                .outerjoin(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    Ship.status == ShipStatus.RUNNING,
+                    SessionShip.id == None,  # noqa: E711
+                )
+            )
+            result = await session.execute(statement)
+            return len(list(result.scalars().all()))
         finally:
             await session.close()
 

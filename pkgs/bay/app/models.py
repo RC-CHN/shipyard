@@ -28,12 +28,6 @@ class ShipBase(SQLModel):
     container_id: Optional[str] = Field(default=None)
     ip_address: Optional[str] = Field(default=None)
     ttl: int = Field(description="Time to live in seconds")
-    max_session_num: int = Field(
-        default=1, description="Maximum number of sessions that can use this ship"
-    )
-    current_session_num: int = Field(
-        default=0, description="Current number of active sessions"
-    )
     expires_at: Optional[datetime] = Field(
         default=None,
         description="When this ship will expire based on all sessions",
@@ -92,9 +86,6 @@ class CreateShipRequest(BaseModel):
 
     ttl: int = Field(..., gt=0, description="Time to live in seconds")
     spec: Optional[ShipSpec] = Field(None, description="Ship specifications")
-    max_session_num: int = Field(
-        default=1, gt=0, description="Maximum number of sessions that can use this ship"
-    )
     force_create: bool = Field(
         default=False,
         description="If True, skip all reuse logic and always create a new container"
@@ -111,10 +102,8 @@ class ShipResponse(BaseModel):
     container_id: Optional[str]
     ip_address: Optional[str]
     ttl: int
-    max_session_num: int
-    current_session_num: int
     expires_at: Optional[datetime] = Field(
-        None, description="When this ship will expire based on all sessions"
+        None, description="When this ship will expire based on session expiration"
     )
 
 

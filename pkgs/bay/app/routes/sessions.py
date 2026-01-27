@@ -211,14 +211,7 @@ async def delete_session(session_id: str, token: str = Depends(verify_token)):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Session not found"
             )
-        
-        # Try to decrement the ship's session count (may fail if ship already deleted)
-        try:
-            await db_service.decrement_ship_session_count(session_ship.ship_id)
-        except Exception:
-            # Ship may have been deleted, ignore the error
-            pass
-        
+
         # Delete the session
         await session.delete(session_ship)
         await session.commit()

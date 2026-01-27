@@ -8,6 +8,7 @@ and operations, including creation, deletion, execution, and file operations.
 import asyncio
 import logging
 from typing import Optional, List, Dict
+
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
@@ -38,147 +39,159 @@ class ShipService:
     def __init__(self):
         # Track cleanup tasks for each ship to enable cancellation
         self._cleanup_tasks: Dict[str, asyncio.Task] = {}
+        # Warm pool replenishment task
+        self._warm_pool_task: Optional[asyncio.Task] = None
+
+    async def start_warm_pool(self):
+        """Start the warm pool replenishment background task."""
+        if not settings.warm_pool_enabled:
+            logger.info("Warm pool is disabled")
+            return
+
+        if self._warm_pool_task and not self._warm_pool_task.done():
+            return  # Already running
+
+        self._warm_pool_task = asyncio.create_task(self._warm_pool_replenisher())
+        logger.info(f"Warm pool started (min_size={settings.warm_pool_min_size})")
+
+    async def stop_warm_pool(self):
+        """Stop the warm pool replenishment background task."""
+        if self._warm_pool_task and not self._warm_pool_task.done():
+            self._warm_pool_task.cancel()
+            try:
+                await self._warm_pool_task
+            except asyncio.CancelledError:
+                pass
+        self._warm_pool_task = None
+
+    async def _warm_pool_replenisher(self):
+        """Background task to maintain warm pool size."""
+        while True:
+            try:
+                await self._replenish_warm_pool()
+                await asyncio.sleep(settings.warm_pool_replenish_interval)
+            except asyncio.CancelledError:
+                logger.info("Warm pool replenisher stopped")
+                break
+            except Exception as e:
+                logger.error(f"Warm pool replenisher error: {e}")
+                await asyncio.sleep(settings.warm_pool_replenish_interval)
+
+    async def _replenish_warm_pool(self):
+        """Ensure warm pool has enough ships."""
+        current_count = await db_service.count_warm_pool_ships()
+        active_count = await db_service.count_active_ships()
+
+        # Calculate how many ships we need to create
+        needed = settings.warm_pool_min_size - current_count
+
+        # Respect max ship limit
+        available_slots = settings.max_ship_num - active_count
+        to_create = min(needed, available_slots, settings.warm_pool_max_size - current_count)
+
+        if to_create > 0:
+            logger.info(f"Replenishing warm pool: creating {to_create} ships (current={current_count})")
+            for _ in range(to_create):
+                try:
+                    await self._create_warm_pool_ship()
+                except Exception as e:
+                    logger.error(f"Failed to create warm pool ship: {e}")
+                    break  # Stop on first failure
+
+    async def _create_warm_pool_ship(self) -> Ship:
+        """Create a ship for the warm pool (no session attached)."""
+        ship = Ship(ttl=settings.default_ship_ttl, status=ShipStatus.CREATING)
+        ship = await db_service.create_ship(ship)
+
+        try:
+            container_info = await get_driver().create_ship_container(ship, None)
+            ship.container_id = container_info.container_id
+            ship.ip_address = container_info.ip_address
+            ship = await db_service.update_ship(ship)
+
+            if not ship.ip_address:
+                await db_service.delete_ship(ship.id)
+                raise RuntimeError("Ship has no IP address")
+
+            is_ready = await wait_for_ship_ready(ship.ip_address)
+            if not is_ready:
+                if ship.container_id:
+                    await get_driver().stop_ship_container(ship.container_id)
+                await db_service.delete_ship(ship.id)
+                raise RuntimeError("Ship failed health check")
+
+            ship.status = ShipStatus.RUNNING
+            ship = await db_service.update_ship(ship)
+
+            logger.info(f"Warm pool ship {ship.id} created and ready")
+            return ship
+
+        except Exception as e:
+            await db_service.delete_ship(ship.id)
+            raise
 
     async def create_ship(self, request: CreateShipRequest, session_id: str) -> Ship:
         """Create a new ship or reuse an existing one for the session.
-        
-        If request.force_create is True, skip all reuse logic and always create a new container.
+
+        With 1:1 Session-Ship binding:
+        1. If session has an active ship, return it
+        2. If session has a stopped ship with data, restore it
+        3. Try to allocate from warm pool
+        4. Create a new ship on-demand
         """
         # If force_create is True, skip all reuse logic
         if not request.force_create:
             # First, check if this session already has an active running ship
             active_ship = await db_service.find_active_ship_for_session(session_id)
             if active_ship:
-                # Verify that the container actually exists and is running
+                # Verify container is actually running
                 if active_ship.container_id and await get_driver().is_container_running(
                     active_ship.container_id
                 ):
-                    # Update last activity and return the existing active ship
                     await db_service.update_session_activity(session_id, active_ship.id)
-                    logger.info(
-                        f"Session {session_id} already has active ship {active_ship.id}, returning it"
-                    )
+                    logger.info(f"Session {session_id} reusing active ship {active_ship.id}")
                     return active_ship
                 else:
-                    # Container doesn't exist or isn't running, mark ship as stopped and restore it
-                    logger.warning(
-                        f"Ship {active_ship.id} is marked active but container is not running, restoring..."
-                    )
+                    # Container not running, mark as stopped and restore
+                    logger.warning(f"Ship {active_ship.id} container not running, restoring...")
                     active_ship.status = ShipStatus.STOPPED
                     await db_service.update_ship(active_ship)
-                    # Restore the ship
                     return await self._restore_ship(active_ship, request, session_id)
 
-            # Second, check if this session has a stopped ship with existing data
+            # Second, check for stopped ship with existing data
             stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
             if stopped_ship and get_driver().ship_data_exists(stopped_ship.id):
-                # Restore the stopped ship
-                logger.info(
-                    f"Restoring stopped ship {stopped_ship.id} for session {session_id}"
-                )
+                logger.info(f"Restoring stopped ship {stopped_ship.id} for session {session_id}")
                 return await self._restore_ship(stopped_ship, request, session_id)
 
-            # Third, try to find an available ship that can accept this session
-            # NOTE: This only applies to NEW sessions that don't have any ship yet.
-            # If a session already has a ship (active or stopped), it should NOT join another ship.
-            # The checks in steps 1 and 2 above ensure we only reach here for truly new sessions.
-            logger.debug(f"Looking for available ship for new session {session_id}")
-            available_ship = await db_service.find_available_ship(session_id)
-            logger.debug(f"find_available_ship returned: {available_ship}")
-
-            if available_ship:
-                # Verify that the container actually exists and is running
-                logger.debug(f"Checking container status for ship {available_ship.id}, container_id: {available_ship.container_id}")
-                if (
-                    not available_ship.container_id
-                    or not await get_driver().is_container_running(
-                        available_ship.container_id
-                    )
-                ):
-                    # Container doesn't exist or isn't running, mark ship as stopped
-                    logger.warning(
-                        f"Ship {available_ship.id} is marked active but container is not running, marking as stopped"
-                    )
-                    available_ship.status = ShipStatus.STOPPED
-                    await db_service.update_ship(available_ship)
-                    # Don't use this ship, continue to create a new one
-                    available_ship = None
-
-            if available_ship:
-                # Check if this session already has access to this ship
-                logger.debug(f"Checking if session {session_id} already has access to ship {available_ship.id}")
-                existing_session = await db_service.get_session_ship(
-                    session_id, available_ship.id
-                )
-                logger.debug(f"Existing session: {existing_session}")
-
-                if existing_session:
-                    # Update last activity and return existing ship
-                    logger.info(f"Session {session_id} already has access to ship {available_ship.id}, updating activity")
-                    await db_service.update_session_activity(session_id, available_ship.id)
-                    return available_ship
-                else:
-                    # Calculate expiration time for this session
-                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl)
-
-                    # Add this session to the ship
-                    logger.info(f"Adding session {session_id} to ship {available_ship.id}")
-                    session_ship = SessionShip(
-                        session_id=session_id,
-                        ship_id=available_ship.id,
-                        expires_at=expires_at,
-                        initial_ttl=request.ttl,
-                    )
-                    await db_service.create_session_ship(session_ship)
-                    logger.debug(f"Created session_ship record: {session_ship.id}")
-                    
-                    updated_ship = await db_service.increment_ship_session_count(available_ship.id)
-                    logger.debug(f"increment_ship_session_count returned: {updated_ship}")
-                    
-                    if updated_ship is None:
-                        logger.error(f"Failed to increment session count for ship {available_ship.id}")
-                        raise ValueError(f"Failed to update ship {available_ship.id} session count")
-                    
-                    available_ship = updated_ship
-
-                    # Recalculate ship's TTL based on all sessions' expiration times
-                    logger.debug(f"Recalculating cleanup for ship {available_ship.id}")
-                    await self._recalculate_and_schedule_cleanup(available_ship.id)
-
-                    logger.info(
-                        f"Session {session_id} joined ship {available_ship.id}, expires at {expires_at}"
-                    )
-                    return available_ship
+            # Third, try to allocate from warm pool
+            if settings.warm_pool_enabled:
+                warm_ship = await db_service.find_warm_pool_ship()
+                if warm_ship:
+                    logger.info(f"Allocating warm pool ship {warm_ship.id} to session {session_id}")
+                    return await self._assign_ship_to_session(warm_ship, request, session_id)
         else:
             logger.info(f"force_create=True, skipping reuse logic for session {session_id}")
 
-        # Fourth (or First if force_create), no available ship found, create a new one
+        # Fourth, create a new ship on-demand
         # Check ship limits
         if settings.behavior_after_max_ship == "reject":
             active_count = await db_service.count_active_ships()
             if active_count >= settings.max_ship_num:
                 raise ValueError("Maximum number of ships reached")
         elif settings.behavior_after_max_ship == "wait":
-            # Wait for available slot
             await self._wait_for_available_slot()
 
-        # Create ship record with CREATING status (status=2)
-        # This prevents status_checker from marking it as stopped during creation
-        ship = Ship(ttl=request.ttl, max_session_num=request.max_session_num, status=ShipStatus.CREATING)
+        # Create new ship
+        ship = Ship(ttl=request.ttl, status=ShipStatus.CREATING)
         ship = await db_service.create_ship(ship)
 
         try:
-            # Create container
-            container_info = await get_driver().create_ship_container(
-                ship, request.spec
-            )
-
-            # Update ship with container info
+            container_info = await get_driver().create_ship_container(ship, request.spec)
             ship.container_id = container_info.container_id
             ship.ip_address = container_info.ip_address
             ship = await db_service.update_ship(ship)
 
-            # Wait for ship to be ready
             if not ship.ip_address:
                 logger.error(f"Ship {ship.id} has no IP address")
                 await db_service.delete_ship(ship.id)
@@ -188,7 +201,6 @@ class ShipService:
             is_ready = await wait_for_ship_ready(ship.ip_address)
 
             if not is_ready:
-                # Ship failed to become ready, cleanup
                 logger.error(f"Ship {ship.id} failed health check, cleaning up")
                 if ship.container_id:
                     await get_driver().stop_ship_container(ship.container_id)
@@ -197,32 +209,40 @@ class ShipService:
                     f"Ship failed to become ready within {settings.ship_health_check_timeout} seconds"
                 )
 
-            # Create session-ship relationship
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl)
-            session_ship = SessionShip(
-                session_id=session_id,
-                ship_id=ship.id,
-                expires_at=expires_at,
-                initial_ttl=request.ttl,
-            )
-            await db_service.create_session_ship(session_ship)
-            ship = await db_service.increment_ship_session_count(ship.id)
+            # Assign to session
+            ship = await self._assign_ship_to_session(ship, request, session_id)
 
-            # Mark ship as RUNNING now that it's fully ready
-            ship.status = ShipStatus.RUNNING
-            ship = await db_service.update_ship(ship)
-
-            # Schedule TTL cleanup
-            await self._schedule_cleanup(ship.id, ship.ttl)
-
-            logger.info(f"Ship {ship.id} created successfully and is ready")
+            logger.info(f"Ship {ship.id} created successfully for session {session_id}")
             return ship
 
         except Exception as e:
-            # Cleanup on failure
             await db_service.delete_ship(ship.id)
             logger.error(f"Failed to create ship {ship.id}: {e}")
             raise
+
+    async def _assign_ship_to_session(
+        self, ship: Ship, request: CreateShipRequest, session_id: str
+    ) -> Ship:
+        """Assign a ship to a session (1:1 binding)."""
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl)
+
+        session_ship = SessionShip(
+            session_id=session_id,
+            ship_id=ship.id,
+            expires_at=expires_at,
+            initial_ttl=request.ttl,
+        )
+        await db_service.create_session_ship(session_ship)
+
+        # Update ship TTL and status
+        ship.ttl = request.ttl
+        ship.status = ShipStatus.RUNNING
+        ship = await db_service.update_ship(ship)
+
+        # Schedule cleanup
+        await self._schedule_cleanup(ship.id, request.ttl)
+
+        return ship
 
     async def get_ship(self, ship_id: str) -> Optional[Ship]:
         """Get ship by ID."""
