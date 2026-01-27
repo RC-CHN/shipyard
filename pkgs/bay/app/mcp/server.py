@@ -5,6 +5,8 @@ This module provides an MCP server that allows MCP-compatible clients
 (Claude Desktop, ChatGPT Desktop, Cursor, VS Code, etc.) to interact
 with Shipyard sandboxes.
 
+The MCP Server internally uses the Shipyard SDK to communicate with Bay.
+
 Supported transports:
 - stdio (default): For local integration with desktop apps
 - streamable-http: For remote/hosted deployments
@@ -18,123 +20,84 @@ Usage:
 
 Environment variables:
     SHIPYARD_ENDPOINT: Bay API URL (default: http://localhost:8156)
-    SHIPYARD_TOKEN: Access token for Bay API authentication
+    SHIPYARD_TOKEN: Access token for Bay API authentication (required)
 """
 
 import os
-import uuid
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Optional
 
-import aiohttp
+# Add SDK to path if running standalone
+sdk_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "shipyard_python_sdk")
+if os.path.exists(sdk_path):
+    sys.path.insert(0, sdk_path)
+
+from shipyard import Sandbox, ExecResult
 
 from mcp.server.fastmcp import Context, FastMCP
 
 
 @dataclass
-class ShipyardContext:
-    """Application context with shared resources."""
-
-    http_session: aiohttp.ClientSession
-    bay_url: str
-    access_token: str
-    ship_id: Optional[str] = None
-    session_id: str = ""
-
-    def __post_init__(self):
-        if not self.session_id:
-            self.session_id = str(uuid.uuid4())
+class MCPContext:
+    """MCP Server context holding the sandbox instance."""
+    sandbox: Sandbox
 
 
 @asynccontextmanager
-async def shipyard_lifespan(server: FastMCP) -> AsyncIterator[ShipyardContext]:
-    """Manage application lifecycle with type-safe context."""
-    bay_url = os.getenv("SHIPYARD_ENDPOINT", "http://localhost:8156").rstrip("/")
-    access_token = os.getenv("SHIPYARD_TOKEN", "")
+async def mcp_lifespan(server: FastMCP) -> AsyncIterator[MCPContext]:
+    """Manage MCP server lifecycle with sandbox."""
+    endpoint = os.getenv("SHIPYARD_ENDPOINT", "http://localhost:8156")
+    token = os.getenv("SHIPYARD_TOKEN", "")
 
-    if not access_token:
+    if not token:
         raise ValueError(
             "SHIPYARD_TOKEN environment variable is required. "
             "Set it to your Bay API access token."
         )
 
-    headers = {"Authorization": f"Bearer {access_token}"}
-    http_session = aiohttp.ClientSession(headers=headers)
+    # Create and start sandbox
+    sandbox = Sandbox(endpoint=endpoint, token=token)
+    await sandbox.start()
 
     try:
-        yield ShipyardContext(
-            http_session=http_session,
-            bay_url=bay_url,
-            access_token=access_token,
-        )
+        yield MCPContext(sandbox=sandbox)
     finally:
-        await http_session.close()
+        await sandbox.stop()
 
 
-# Create MCP server with lifespan management
+# Create MCP server
 mcp = FastMCP(
     "Shipyard",
     version="1.0.0",
-    lifespan=shipyard_lifespan,
+    lifespan=mcp_lifespan,
 )
 
 
-async def _ensure_ship(ctx: ShipyardContext, ttl: int = 3600) -> str:
-    """Ensure we have an active ship, create one if needed."""
-    if ctx.ship_id:
-        # Check if ship is still running
-        async with ctx.http_session.get(
-            f"{ctx.bay_url}/ship/{ctx.ship_id}"
-        ) as resp:
-            if resp.status == 200:
-                ship_data = await resp.json()
-                if ship_data.get("status") == 1:  # RUNNING
-                    return ctx.ship_id
-
-    # Create new ship
-    payload = {"ttl": ttl}
-    headers = {"X-SESSION-ID": ctx.session_id}
-
-    async with ctx.http_session.post(
-        f"{ctx.bay_url}/ship", json=payload, headers=headers
-    ) as resp:
-        if resp.status == 201:
-            ship_data = await resp.json()
-            ctx.ship_id = ship_data["id"]
-            return ctx.ship_id
-        else:
-            error = await resp.text()
-            raise Exception(f"Failed to create ship: {error}")
+def _get_sandbox(ctx: Context) -> Sandbox:
+    """Get sandbox from context."""
+    return ctx.request_context.lifespan_context.sandbox
 
 
-async def _exec_operation(
-    ctx: ShipyardContext,
-    operation_type: str,
-    payload: dict,
-) -> dict:
-    """Execute an operation on the ship."""
-    ship_id = await _ensure_ship(ctx)
+def _format_exec_result(result: ExecResult) -> str:
+    """Format execution result for LLM consumption."""
+    parts = []
 
-    request_payload = {"type": operation_type, "payload": payload}
-    headers = {"X-SESSION-ID": ctx.session_id}
+    if result.stdout:
+        parts.append(f"Output:\n{result.stdout}")
+    if result.stderr:
+        parts.append(f"Errors:\n{result.stderr}")
+    if result.result is not None:
+        parts.append(f"Result: {result.result}")
+    if result.exit_code != 0:
+        parts.append(f"Exit code: {result.exit_code}")
 
-    async with ctx.http_session.post(
-        f"{ctx.bay_url}/ship/{ship_id}/exec",
-        json=request_payload,
-        headers=headers,
-    ) as resp:
-        if resp.status == 200:
-            return await resp.json()
-        else:
-            error = await resp.text()
-            raise Exception(f"Execution failed: {error}")
+    if not parts:
+        return "Executed successfully (no output)"
 
-
-def _get_ctx(ctx: Context) -> ShipyardContext:
-    """Get ShipyardContext from request context."""
-    return ctx.request_context.lifespan_context
+    return "\n\n".join(parts)
 
 
 # =============================================================================
@@ -160,27 +123,9 @@ async def execute_python(
     Returns:
         Execution result including stdout, stderr, and any return value
     """
-    shipyard_ctx = _get_ctx(ctx)
-    result = await _exec_operation(
-        shipyard_ctx,
-        "ipython/exec",
-        {"code": code, "timeout": timeout},
-    )
-    data = result.get("data", result)
-
-    # Format output for LLM consumption
-    output_parts = []
-    if data.get("stdout"):
-        output_parts.append(f"Output:\n{data['stdout']}")
-    if data.get("stderr"):
-        output_parts.append(f"Errors:\n{data['stderr']}")
-    if data.get("result"):
-        output_parts.append(f"Result: {data['result']}")
-
-    if not output_parts:
-        return "Code executed successfully (no output)"
-
-    return "\n\n".join(output_parts)
+    sandbox = _get_sandbox(ctx)
+    result = await sandbox.python.exec(code, timeout=timeout)
+    return _format_exec_result(result)
 
 
 @mcp.tool()
@@ -203,24 +148,9 @@ async def execute_shell(
     Returns:
         Command output including stdout and stderr
     """
-    shipyard_ctx = _get_ctx(ctx)
-    payload = {"command": command, "timeout": timeout}
-    if cwd:
-        payload["cwd"] = cwd
-
-    result = await _exec_operation(shipyard_ctx, "shell/exec", payload)
-    data = result.get("data", result)
-
-    # Format output
-    output_parts = []
-    if data.get("stdout"):
-        output_parts.append(data["stdout"])
-    if data.get("stderr"):
-        output_parts.append(f"stderr: {data['stderr']}")
-    if data.get("exit_code", 0) != 0:
-        output_parts.append(f"Exit code: {data['exit_code']}")
-
-    return "\n".join(output_parts) if output_parts else "Command completed (no output)"
+    sandbox = _get_sandbox(ctx)
+    result = await sandbox.shell.exec(command, cwd=cwd, timeout=timeout)
+    return _format_exec_result(result)
 
 
 @mcp.tool()
@@ -236,14 +166,8 @@ async def read_file(
     Returns:
         File content as string
     """
-    shipyard_ctx = _get_ctx(ctx)
-    result = await _exec_operation(
-        shipyard_ctx,
-        "fs/read_file",
-        {"path": path},
-    )
-    data = result.get("data", result)
-    return data.get("content", str(data))
+    sandbox = _get_sandbox(ctx)
+    return await sandbox.fs.read(path)
 
 
 @mcp.tool()
@@ -264,16 +188,9 @@ async def write_file(
     Returns:
         Confirmation message
     """
-    shipyard_ctx = _get_ctx(ctx)
-    result = await _exec_operation(
-        shipyard_ctx,
-        "fs/write_file",
-        {"path": path, "content": content},
-    )
-    data = result.get("data", result)
-    if data.get("success", True):
-        return f"File written: {path}"
-    return f"Failed to write file: {data}"
+    sandbox = _get_sandbox(ctx)
+    await sandbox.fs.write(path, content)
+    return f"File written: {path}"
 
 
 @mcp.tool()
@@ -289,14 +206,8 @@ async def list_files(
     Returns:
         List of files and directories
     """
-    shipyard_ctx = _get_ctx(ctx)
-    result = await _exec_operation(
-        shipyard_ctx,
-        "fs/list_dir",
-        {"path": path},
-    )
-    data = result.get("data", result)
-    entries = data.get("entries", [])
+    sandbox = _get_sandbox(ctx)
+    entries = await sandbox.fs.list(path)
 
     if not entries:
         return f"Directory '{path}' is empty"
@@ -326,19 +237,12 @@ async def install_package(
     Returns:
         Installation result
     """
-    shipyard_ctx = _get_ctx(ctx)
-    result = await _exec_operation(
-        shipyard_ctx,
-        "shell/exec",
-        {"command": f"pip install {package}", "timeout": 120},
-    )
-    data = result.get("data", result)
+    sandbox = _get_sandbox(ctx)
+    result = await sandbox.shell.exec(f"pip install {package}", timeout=120)
 
-    if data.get("exit_code", 0) == 0:
+    if result.success:
         return f"Successfully installed: {package}"
-
-    stderr = data.get("stderr", "")
-    return f"Installation failed: {stderr}"
+    return f"Installation failed: {result.stderr}"
 
 
 @mcp.tool()
@@ -346,26 +250,53 @@ async def get_sandbox_info(ctx: Context = None) -> str:
     """Get information about the current sandbox environment.
 
     Returns:
-        Sandbox information including Python version, available tools, etc.
+        Sandbox information including session ID, ship ID, etc.
     """
-    shipyard_ctx = _get_ctx(ctx)
-    ship_id = await _ensure_ship(shipyard_ctx)
+    sandbox = _get_sandbox(ctx)
+    return f"Session ID: {sandbox.session_id}\nShip ID: {sandbox.ship_id}"
 
-    async with shipyard_ctx.http_session.get(
-        f"{shipyard_ctx.bay_url}/ship/{ship_id}"
-    ) as resp:
-        if resp.status == 200:
-            ship_data = await resp.json()
-            info = [
-                f"Ship ID: {ship_id}",
-                f"Session ID: {shipyard_ctx.session_id}",
-                f"Status: {'Running' if ship_data.get('status') == 1 else 'Unknown'}",
-            ]
-            if ship_data.get("expires_at"):
-                info.append(f"Expires at: {ship_data['expires_at']}")
-            return "\n".join(info)
-        else:
-            return f"Ship ID: {ship_id}\nSession ID: {shipyard_ctx.session_id}"
+
+@mcp.tool()
+async def get_execution_history(
+    exec_type: str = None,
+    success_only: bool = False,
+    limit: int = 50,
+    ctx: Context = None,
+) -> str:
+    """Get execution history for this session.
+
+    Useful for reviewing past executions or building skill libraries.
+
+    Args:
+        exec_type: Filter by 'python' or 'shell' (optional)
+        success_only: Only return successful executions
+        limit: Maximum entries to return (default: 50)
+
+    Returns:
+        Execution history entries
+    """
+    sandbox = _get_sandbox(ctx)
+    history = await sandbox.get_execution_history(
+        exec_type=exec_type,
+        success_only=success_only,
+        limit=limit,
+    )
+
+    entries = history.get("entries", [])
+    if not entries:
+        return "No execution history found"
+
+    lines = [f"Execution History ({history.get('total', 0)} total):"]
+    for entry in entries:
+        status = "✓" if entry.get("success") else "✗"
+        exec_t = entry.get("exec_type", "?")
+        time_ms = entry.get("execution_time_ms", 0)
+        code = entry.get("code", "")[:50]  # Truncate long code
+        if len(entry.get("code", "")) > 50:
+            code += "..."
+        lines.append(f"  {status} [{exec_t}] {time_ms}ms: {code}")
+
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -378,7 +309,8 @@ async def sandbox_info_resource() -> str:
     """Information about the Shipyard sandbox service."""
     return """Shipyard Sandbox Service
 
-Shipyard provides secure, isolated Python and shell execution environments.
+Shipyard provides secure, isolated Python and shell execution environments
+for AI agents and assistants.
 
 Available tools:
 - execute_python: Run Python code
@@ -386,14 +318,18 @@ Available tools:
 - read_file: Read file contents
 - write_file: Write to files
 - list_files: List directory contents
-- install_package: Install Python packages
+- install_package: Install Python packages via pip
 - get_sandbox_info: Get current sandbox information
+- get_execution_history: View past executions
 
 Each session gets a dedicated container with:
-- Full Python environment
+- Full Python environment (3.13+)
+- Node.js LTS
 - Common CLI tools (git, curl, etc.)
 - Isolated filesystem
-- Network access (configurable)
+- Network access
+
+Session state persists across tool calls within the same MCP session.
 """
 
 
