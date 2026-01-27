@@ -28,6 +28,7 @@ pip install mcp
 ```bash
 export SHIPYARD_ENDPOINT=http://localhost:8156  # Bay API URL
 export SHIPYARD_TOKEN=your-access-token         # Required
+export SHIPYARD_SANDBOX_TTL=1800                # Optional: TTL in seconds (default: 30 min)
 ```
 
 ### Install from source
@@ -54,7 +55,7 @@ shipyard-mcp
 
 ### HTTP mode (for remote deployments)
 
-For hosted/remote MCP servers:
+For hosted/remote MCP servers. **Each client session gets its own isolated sandbox.**
 
 ```bash
 python -m app.mcp.run --transport http --port 8000
@@ -131,6 +132,7 @@ The MCP server exposes the following tools:
 | `list_files` | List directory contents |
 | `install_package` | Install Python packages via pip |
 | `get_sandbox_info` | Get current sandbox information |
+| `get_execution_history` | View past executions |
 
 ### Example: execute_python
 
@@ -169,6 +171,30 @@ The server provides an informational resource:
 
 - `sandbox://info` - Information about the Shipyard sandbox service
 
+## Transport Modes
+
+### stdio (Default)
+
+Standard I/O transport for local integration with desktop apps. One process = one session = one sandbox.
+
+### HTTP (Streamable HTTP)
+
+HTTP transport for remote/hosted deployments. Each MCP client session gets its own isolated sandbox:
+
+- **Session isolation**: Client A cannot see Client B's variables or files
+- **Automatic TTL renewal**: Sandbox TTL is renewed on each tool call
+- **Cleanup on disconnect**: Sandboxes are cleaned up via TTL when clients disconnect
+
+```
+Client A (mcp-session-aaa) ──► Sandbox A (ship-111)
+    │
+    │ execute_python("x = 123")  ✓
+    │
+Client B (mcp-session-bbb) ──► Sandbox B (ship-222)
+    │
+    │ execute_python("print(x)")  ✗ NameError (isolated!)
+```
+
 ## Architecture
 
 ```
@@ -198,6 +224,7 @@ The server provides an informational resource:
 - Code execution is sandboxed
 - Containers have configurable network access
 - Resources are automatically cleaned up via TTL
+- HTTP mode provides per-client session isolation
 
 ## Troubleshooting
 
@@ -212,6 +239,10 @@ Ensure the Bay API is running at the configured `SHIPYARD_ENDPOINT`.
 ### Tool execution timeout
 
 Increase the `timeout` parameter in tool arguments (default: 30 seconds).
+
+### Sandbox expired
+
+If a sandbox expires due to inactivity, a new one will be automatically created on the next tool call.
 
 ## Development
 
@@ -232,5 +263,5 @@ npx @modelcontextprotocol/inspector
 
 ```bash
 cd pkgs/bay
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
