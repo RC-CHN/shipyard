@@ -42,7 +42,19 @@
 - 使用官方 MCP Python SDK (`mcp` 包) 实现标准 MCP 服务器
 - 支持 stdio 和 streamable-http 两种传输方式
 - 提供 Python 执行、Shell 执行、文件操作等工具
-- 发布 npm 包 `@anthropic/shipyard-mcp` 用于快速安装
+- 发布 npm 包 `shipyard-mcp` 用于快速安装
+
+### 4. SDK 架构重构
+
+**问题背景：**
+- 原 SDK (`ShipyardClient`) 暴露了过多底层细节
+- MCP Server 和 SDK 代码重复
+- 需要更简洁的接口给开发者使用
+
+**解决方案：**
+- 新增统一 `Sandbox` 类作为主要入口
+- MCP Server 内部使用 SDK，避免代码重复
+- 保留 `ShipyardClient` 作为低级 API
 
 ---
 
@@ -215,6 +227,59 @@ execution_time_ms: int # 执行耗时（毫秒）
 
 ### Python SDK
 
+#### 新增 Sandbox 类 (`shipyard_python_sdk/shipyard/sandbox.py`)
+
+**统一入口类：**
+```python
+class Sandbox:
+    """
+    简化的沙箱接口，连接 Bay 服务执行代码。
+
+    Usage:
+        async with Sandbox() as sandbox:
+            result = await sandbox.python.exec("print('hello')")
+            print(result.stdout)
+    """
+
+    def __init__(
+        self,
+        endpoint: Optional[str] = None,  # Bay API URL
+        token: Optional[str] = None,      # 访问令牌
+        ttl: int = 3600,                  # 会话 TTL
+        session_id: Optional[str] = None, # 会话 ID（自动生成）
+    )
+
+    # 组件接口
+    python: PythonExecutor   # sandbox.python.exec(code)
+    shell: ShellExecutor     # sandbox.shell.exec(command)
+    fs: FileSystem           # sandbox.fs.read/write/list
+
+    # 方法
+    async def start() -> Sandbox
+    async def stop() -> None
+    async def extend_ttl(ttl: int) -> None
+    async def get_execution_history(...) -> Dict
+```
+
+**执行结果类：**
+```python
+@dataclass
+class ExecResult:
+    success: bool
+    stdout: str = ""
+    stderr: str = ""
+    result: Any = None
+    exit_code: int = 0
+    execution_time_ms: int = 0
+    code: str = ""
+```
+
+**便捷函数：**
+```python
+async def run_python(code: str, **kwargs) -> ExecResult
+async def run_shell(command: str, **kwargs) -> ExecResult
+```
+
 #### Client (`shipyard_python_sdk/shipyard/client.py`)
 
 **变更方法：**
@@ -307,40 +372,88 @@ async def create_session_ship(
 
 ### MCP Server（新增）
 
+#### 架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Agent / LLM                              │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │
+              ┌─────────────────┴─────────────────┐
+              │                                   │
+              ▼                                   ▼
+    ┌─────────────────┐                 ┌─────────────────┐
+    │   MCP Protocol  │                 │  开发者代码     │
+    │ (Claude/Cursor) │                 │  (自研 Agent)   │
+    └────────┬────────┘                 └────────┬────────┘
+             │                                   │
+             ▼                                   ▼
+    ┌─────────────────┐                 ┌─────────────────┐
+    │   MCP Server    │────────────────►│      SDK        │
+    │                 │  内部使用 SDK    │    Sandbox      │
+    └────────┬────────┘                 └────────┬────────┘
+             │                                   │
+             └───────────────┬───────────────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │       Bay       │
+                    │  - Pool 管理     │
+                    │  - Session 状态  │
+                    │  - 执行历史      │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │      Ship       │
+                    │  (Python/Shell) │
+                    └─────────────────┘
+```
+
+#### 组件职责
+
+| 组件 | 职责 |
+|------|------|
+| **MCP Server** | 规范化输入输出，让 MCP 客户端能调用沙箱 |
+| **SDK (Sandbox)** | Python 开发者构建 Agent 时使用 |
+| **Bay** | 容器池管理、Session 状态、执行历史 |
+| **Ship** | 实际执行 Python/Shell |
+
 #### 文件结构
+
+**Bay 内置 MCP Server（使用 FastMCP）：**
 ```
 pkgs/bay/app/mcp/
 ├── __init__.py
-├── server.py      # MCP 服务器实现
+├── server.py      # MCP 服务器，内部使用 SDK Sandbox 类
 └── run.py         # 入口点
 ```
 
-#### 提供的工具
-```python
-@mcp.tool()
-async def execute_python(code: str, session_id: Optional[str] = None) -> str
-    """执行 Python 代码"""
-
-@mcp.tool()
-async def execute_shell(command: str, session_id: Optional[str] = None) -> str
-    """执行 Shell 命令"""
-
-@mcp.tool()
-async def upload_file(local_path: str, remote_path: str, ...) -> str
-    """上传文件到容器"""
-
-@mcp.tool()
-async def download_file(remote_path: str, local_path: str, ...) -> str
-    """从容器下载文件"""
-
-@mcp.tool()
-async def list_sessions() -> str
-    """列出所有会话"""
-
-@mcp.tool()
-async def get_execution_history(session_id: str, ...) -> str
-    """获取执行历史"""
+**npm 包独立 MCP Server：**
 ```
+pkgs/mcp-server/
+├── bin/
+│   └── shipyard-mcp.js   # Node.js CLI 入口
+├── python/
+│   ├── __init__.py
+│   ├── __main__.py
+│   └── server.py         # 独立 Python MCP 服务器（内置精简 SDK）
+├── package.json
+└── README.md
+```
+
+#### 提供的 MCP 工具
+
+| 工具 | 描述 |
+|------|------|
+| `execute_python` | 执行 Python 代码 |
+| `execute_shell` | 执行 Shell 命令 |
+| `read_file` | 读取文件内容 |
+| `write_file` | 写入文件 |
+| `list_files` | 列出目录内容 |
+| `install_package` | 通过 pip 安装包 |
+| `get_sandbox_info` | 获取沙箱信息 |
+| `get_execution_history` | 获取执行历史 |
 
 #### 使用方式
 ```bash
@@ -394,9 +507,56 @@ python -m app.mcp.run
 
 ## SDK 使用示例
 
-### 旧方式（已弃用）
+### 新方式：Sandbox 类（推荐）
+
+**基本使用：**
 ```python
-# 不推荐
+from shipyard import Sandbox
+
+async with Sandbox() as sandbox:
+    result = await sandbox.python.exec("print('hello')")
+    print(result.stdout)  # hello
+```
+
+**自定义配置：**
+```python
+from shipyard import Sandbox
+
+async with Sandbox(
+    endpoint="http://bay.example.com:8156",
+    token="your-token",
+    ttl=7200,
+    session_id="my-session-123"
+) as sandbox:
+    # Python 执行
+    result = await sandbox.python.exec("import pandas; print(pandas.__version__)")
+
+    # Shell 执行
+    result = await sandbox.shell.exec("ls -la")
+
+    # 文件操作
+    await sandbox.fs.write("/workspace/test.py", "print('hello')")
+    content = await sandbox.fs.read("/workspace/test.py")
+
+    # 执行历史
+    history = await sandbox.get_execution_history(success_only=True)
+```
+
+**一行代码：**
+```python
+from shipyard import run_python, run_shell
+
+result = await run_python("print('hello')")
+result = await run_shell("ls -la")
+```
+
+### 旧方式：ShipyardClient（仍支持）
+
+```python
+# 低级 API，提供更多控制
+from shipyard import ShipyardClient
+
+client = ShipyardClient(endpoint_url, access_token)
 ship = await client.create_ship(ttl=3600)
 result = await ship.python.exec("print('hello')")
 ```
@@ -500,10 +660,10 @@ history = await session.get_execution_history()
 
 ### 4. 使用 MCP Server
 
-**方式一：npm 包安装（推荐）**
+**方式一：npm 包安装**
 ```bash
 # 全局安装
-npm install -g @anthropic/shipyard-mcp
+npm install -g shipyard-mcp
 
 # 运行
 SHIPYARD_TOKEN=your-token shipyard-mcp
@@ -519,6 +679,21 @@ python -m app.mcp.run
 **方式三：HTTP 模式部署**
 ```bash
 shipyard-mcp --transport http --port 8000
+```
+
+### 5. 使用新 SDK Sandbox 类
+
+```python
+# 旧方式
+from shipyard import ShipyardClient
+client = ShipyardClient(endpoint, token)
+ship = await client.create_ship(ttl=3600)
+result = await ship.python.exec(code)
+
+# 新方式（推荐）
+from shipyard import Sandbox
+async with Sandbox() as sandbox:
+    result = await sandbox.python.exec(code)
 ```
 
 ---
