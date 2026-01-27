@@ -95,6 +95,10 @@ class CreateShipRequest(BaseModel):
     max_session_num: int = Field(
         default=1, gt=0, description="Maximum number of sessions that can use this ship"
     )
+    force_create: bool = Field(
+        default=False,
+        description="If True, skip all reuse logic and always create a new container"
+    )
 
 
 class ShipResponse(BaseModel):

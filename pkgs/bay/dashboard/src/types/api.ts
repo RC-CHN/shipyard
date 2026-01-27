@@ -52,6 +52,7 @@ export interface CreateShipRequest {
   ttl: number
   spec?: ShipSpec
   max_session_num?: number
+  force_create?: boolean  // If true, skip reuse logic and always create new container
 }
 
 export interface ExtendTTLRequest {

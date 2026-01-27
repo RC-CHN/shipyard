@@ -4,8 +4,14 @@ import { shipApi } from '@/api'
 import type { CreateShipRequest, ShipSpec } from '@/types/api'
 import { toast } from '@/composables/useToast'
 
+// 创建模式类型
+export type CreateMode = 'quick' | 'custom'
+
 export function useCreateShip() {
   const router = useRouter()
+
+  // 创建模式：quick（快速模式）或 custom（自定义模式）
+  const createMode = ref<CreateMode>('quick')
 
   // 表单数据
   const ttlMinutes = ref(60) // 默认60分钟
@@ -13,7 +19,6 @@ export function useCreateShip() {
   const cpus = ref<number | undefined>(undefined)
   const memory = ref<string>('')
   const disk = ref<string>('')
-  const showAdvanced = ref(false)
   const submitting = ref(false)
 
   // 预设的 TTL 选项
@@ -55,19 +60,24 @@ export function useCreateShip() {
     submitting.value = true
     try {
       const spec: ShipSpec = {}
-      if (cpus.value !== undefined && cpus.value > 0) {
-        spec.cpus = cpus.value
-      }
-      if (memory.value.trim()) {
-        spec.memory = memory.value.trim()
-      }
-      if (disk.value.trim()) {
-        spec.disk = disk.value.trim()
+      // 只在自定义模式下收集资源配置
+      if (createMode.value === 'custom') {
+        if (cpus.value !== undefined && cpus.value > 0) {
+          spec.cpus = cpus.value
+        }
+        if (memory.value.trim()) {
+          spec.memory = memory.value.trim()
+        }
+        if (disk.value.trim()) {
+          spec.disk = disk.value.trim()
+        }
       }
 
       const request: CreateShipRequest = {
         ttl: ttlMinutes.value * 60, // 转换为秒
-        max_session_num: maxSessionNum.value,
+        max_session_num: createMode.value === 'custom' ? maxSessionNum.value : 1,
+        // 自定义模式下强制创建新容器，确保配置生效
+        force_create: createMode.value === 'custom',
       }
 
       // 只有在设置了 spec 时才添加
@@ -76,7 +86,7 @@ export function useCreateShip() {
       }
 
       const response = await shipApi.create(request)
-      toast.success('容器创建成功')
+      toast.success('工作区创建成功')
       router.push(`/ships/${response.data.id}`)
     } catch {
       // 错误已在 client.ts 中处理
@@ -86,16 +96,16 @@ export function useCreateShip() {
   }
 
   const handleCancel = () => {
-    router.push('/ships')
+    router.push('/sessions')
   }
 
   return {
+    createMode,
     ttlMinutes,
     maxSessionNum,
     cpus,
     memory,
     disk,
-    showAdvanced,
     submitting,
     ttlPresets,
     errors,

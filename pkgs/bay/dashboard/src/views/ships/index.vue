@@ -53,33 +53,22 @@ const closeDropdownWithDelay = () => {
       </div>
 
       <!-- 操作按钮 -->
-      <div class="flex gap-3 w-full sm:w-auto">
-        <button
-          @click="refresh"
-          :disabled="loading"
-          class="btn-secondary flex items-center justify-center gap-2 px-4 py-2.5 flex-1 sm:flex-none"
+      <button
+        @click="refresh"
+        :disabled="loading"
+        class="btn-secondary flex items-center justify-center gap-2 px-4 py-2.5"
+      >
+        <svg
+          class="w-4 h-4 transition-transform duration-500"
+          :class="{ 'animate-spin': loading }"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
         >
-          <svg 
-            class="w-4 h-4 transition-transform duration-500" 
-            :class="{ 'animate-spin': loading }"
-            fill="none" 
-            stroke="currentColor" 
-            viewBox="0 0 24 24"
-          >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          刷新
-        </button>
-        <router-link
-          to="/ships/create"
-          class="btn-primary flex items-center justify-center gap-2 px-6 py-2.5 flex-1 sm:flex-none font-medium"
-        >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-          </svg>
-          新建容器
-        </router-link>
-      </div>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        刷新
+      </button>
     </div>
 
     <!-- 搜索和筛选 -->
@@ -242,18 +231,9 @@ const closeDropdownWithDelay = () => {
         🚢
       </div>
       <h3 class="text-xl font-bold text-[#0F4C75] mb-2">暂无容器实例</h3>
-      <p class="text-slate-500 mb-8 max-w-md mx-auto">
-        您还没有创建任何容器。开始创建一个新的容器来运行您的应用吧。
+      <p class="text-slate-500 max-w-md mx-auto">
+        当前没有任何容器。容器会在您新建工作区时自动创建或复用。
       </p>
-      <router-link
-        to="/ships/create"
-        class="btn-primary px-8 py-3 flex items-center gap-2 text-lg"
-      >
-        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-        </svg>
-        创建第一个容器
-      </router-link>
     </div>
 
     <!-- 删除确认弹窗 -->

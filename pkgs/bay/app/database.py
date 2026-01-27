@@ -63,10 +63,12 @@ class DatabaseService:
         ship.updated_at = datetime.now(timezone.utc)
         session = self.get_session()
         try:
-            session.add(ship)
+            # Use merge() instead of add() to handle detached objects
+            # merge() copies the state of the given instance into a persistent instance
+            merged_ship = await session.merge(ship)
             await session.commit()
-            await session.refresh(ship)
-            return ship
+            await session.refresh(merged_ship)
+            return merged_ship
         finally:
             await session.close()
 
@@ -176,10 +178,11 @@ class DatabaseService:
         """Update session-ship relationship"""
         session = self.get_session()
         try:
-            session.add(session_ship)
+            # Use merge() instead of add() to handle detached objects
+            merged_session_ship = await session.merge(session_ship)
             await session.commit()
-            await session.refresh(session_ship)
-            return session_ship
+            await session.refresh(merged_session_ship)
+            return merged_session_ship
         finally:
             await session.close()
 
@@ -206,10 +209,14 @@ class DatabaseService:
             await session.close()
 
     async def find_active_ship_for_session(self, session_id: str) -> Optional[Ship]:
-        """Find an active running ship that this session has access to"""
+        """Find an active running ship that this session has access to.
+        
+        If the session has access to multiple running ships, returns the most recently updated one.
+        """
         session = self.get_session()
         try:
             # Find RUNNING ships that this session has access to
+            # Order by updated_at desc to get the most recently used one
             statement = (
                 select(Ship)
                 .join(SessionShip, Ship.id == SessionShip.ship_id)
@@ -217,17 +224,23 @@ class DatabaseService:
                     SessionShip.session_id == session_id,
                     Ship.status == ShipStatus.RUNNING,
                 )
+                .order_by(Ship.updated_at.desc())
             )
             result = await session.execute(statement)
-            return result.scalar_one_or_none()
+            # Use scalars().first() instead of scalar_one_or_none() to handle multiple results
+            return result.scalars().first()
         finally:
             await session.close()
 
     async def find_stopped_ship_for_session(self, session_id: str) -> Optional[Ship]:
-        """Find a stopped ship that belongs to this session"""
+        """Find a stopped ship that belongs to this session.
+        
+        If the session has access to multiple stopped ships, returns the most recently updated one.
+        """
         session = self.get_session()
         try:
             # Find STOPPED ships that this session has access to
+            # Order by updated_at desc to get the most recently stopped one
             statement = (
                 select(Ship)
                 .join(SessionShip, Ship.id == SessionShip.ship_id)
@@ -235,9 +248,11 @@ class DatabaseService:
                     SessionShip.session_id == session_id,
                     Ship.status == ShipStatus.STOPPED,
                 )
+                .order_by(Ship.updated_at.desc())
             )
             result = await session.execute(statement)
-            return result.scalar_one_or_none()
+            # Use scalars().first() instead of scalar_one_or_none() to handle multiple results
+            return result.scalars().first()
         finally:
             await session.close()
 

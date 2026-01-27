@@ -40,92 +40,119 @@ class ShipService:
         self._cleanup_tasks: Dict[str, asyncio.Task] = {}
 
     async def create_ship(self, request: CreateShipRequest, session_id: str) -> Ship:
-        """Create a new ship or reuse an existing one for the session."""
-        # First, check if this session already has an active running ship
-        active_ship = await db_service.find_active_ship_for_session(session_id)
-        if active_ship:
-            # Verify that the container actually exists and is running
-            if active_ship.container_id and await get_driver().is_container_running(
-                active_ship.container_id
-            ):
-                # Update last activity and return the existing active ship
-                await db_service.update_session_activity(session_id, active_ship.id)
+        """Create a new ship or reuse an existing one for the session.
+        
+        If request.force_create is True, skip all reuse logic and always create a new container.
+        """
+        # If force_create is True, skip all reuse logic
+        if not request.force_create:
+            # First, check if this session already has an active running ship
+            active_ship = await db_service.find_active_ship_for_session(session_id)
+            if active_ship:
+                # Verify that the container actually exists and is running
+                if active_ship.container_id and await get_driver().is_container_running(
+                    active_ship.container_id
+                ):
+                    # Update last activity and return the existing active ship
+                    await db_service.update_session_activity(session_id, active_ship.id)
+                    logger.info(
+                        f"Session {session_id} already has active ship {active_ship.id}, returning it"
+                    )
+                    return active_ship
+                else:
+                    # Container doesn't exist or isn't running, mark ship as stopped and restore it
+                    logger.warning(
+                        f"Ship {active_ship.id} is marked active but container is not running, restoring..."
+                    )
+                    active_ship.status = ShipStatus.STOPPED
+                    await db_service.update_ship(active_ship)
+                    # Restore the ship
+                    return await self._restore_ship(active_ship, request, session_id)
+
+            # Second, check if this session has a stopped ship with existing data
+            stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
+            if stopped_ship and get_driver().ship_data_exists(stopped_ship.id):
+                # Restore the stopped ship
                 logger.info(
-                    f"Session {session_id} already has active ship {active_ship.id}, returning it"
+                    f"Restoring stopped ship {stopped_ship.id} for session {session_id}"
                 )
-                return active_ship
-            else:
-                # Container doesn't exist or isn't running, mark ship as stopped and restore it
-                logger.warning(
-                    f"Ship {active_ship.id} is marked active but container is not running, restoring..."
+                return await self._restore_ship(stopped_ship, request, session_id)
+
+            # Third, try to find an available ship that can accept this session
+            # NOTE: This only applies to NEW sessions that don't have any ship yet.
+            # If a session already has a ship (active or stopped), it should NOT join another ship.
+            # The checks in steps 1 and 2 above ensure we only reach here for truly new sessions.
+            logger.debug(f"Looking for available ship for new session {session_id}")
+            available_ship = await db_service.find_available_ship(session_id)
+            logger.debug(f"find_available_ship returned: {available_ship}")
+
+            if available_ship:
+                # Verify that the container actually exists and is running
+                logger.debug(f"Checking container status for ship {available_ship.id}, container_id: {available_ship.container_id}")
+                if (
+                    not available_ship.container_id
+                    or not await get_driver().is_container_running(
+                        available_ship.container_id
+                    )
+                ):
+                    # Container doesn't exist or isn't running, mark ship as stopped
+                    logger.warning(
+                        f"Ship {available_ship.id} is marked active but container is not running, marking as stopped"
+                    )
+                    available_ship.status = ShipStatus.STOPPED
+                    await db_service.update_ship(available_ship)
+                    # Don't use this ship, continue to create a new one
+                    available_ship = None
+
+            if available_ship:
+                # Check if this session already has access to this ship
+                logger.debug(f"Checking if session {session_id} already has access to ship {available_ship.id}")
+                existing_session = await db_service.get_session_ship(
+                    session_id, available_ship.id
                 )
-                active_ship.status = ShipStatus.STOPPED
-                await db_service.update_ship(active_ship)
-                # Restore the ship
-                return await self._restore_ship(active_ship, request, session_id)
+                logger.debug(f"Existing session: {existing_session}")
 
-        # Second, check if this session has a stopped ship with existing data
-        stopped_ship = await db_service.find_stopped_ship_for_session(session_id)
-        if stopped_ship and get_driver().ship_data_exists(stopped_ship.id):
-            # Restore the stopped ship
-            logger.info(
-                f"Restoring stopped ship {stopped_ship.id} for session {session_id}"
-            )
-            return await self._restore_ship(stopped_ship, request, session_id)
+                if existing_session:
+                    # Update last activity and return existing ship
+                    logger.info(f"Session {session_id} already has access to ship {available_ship.id}, updating activity")
+                    await db_service.update_session_activity(session_id, available_ship.id)
+                    return available_ship
+                else:
+                    # Calculate expiration time for this session
+                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl)
 
-        # Third, try to find an available ship that can accept this session
-        available_ship = await db_service.find_available_ship(session_id)
+                    # Add this session to the ship
+                    logger.info(f"Adding session {session_id} to ship {available_ship.id}")
+                    session_ship = SessionShip(
+                        session_id=session_id,
+                        ship_id=available_ship.id,
+                        expires_at=expires_at,
+                        initial_ttl=request.ttl,
+                    )
+                    await db_service.create_session_ship(session_ship)
+                    logger.debug(f"Created session_ship record: {session_ship.id}")
+                    
+                    updated_ship = await db_service.increment_ship_session_count(available_ship.id)
+                    logger.debug(f"increment_ship_session_count returned: {updated_ship}")
+                    
+                    if updated_ship is None:
+                        logger.error(f"Failed to increment session count for ship {available_ship.id}")
+                        raise ValueError(f"Failed to update ship {available_ship.id} session count")
+                    
+                    available_ship = updated_ship
 
-        if available_ship:
-            # Verify that the container actually exists and is running
-            if (
-                not available_ship.container_id
-                or not await get_driver().is_container_running(
-                    available_ship.container_id
-                )
-            ):
-                # Container doesn't exist or isn't running, mark ship as stopped
-                logger.warning(
-                    f"Ship {available_ship.id} is marked active but container is not running, marking as stopped"
-                )
-                available_ship.status = ShipStatus.STOPPED
-                await db_service.update_ship(available_ship)
-                # Don't use this ship, continue to create a new one
-                available_ship = None
+                    # Recalculate ship's TTL based on all sessions' expiration times
+                    logger.debug(f"Recalculating cleanup for ship {available_ship.id}")
+                    await self._recalculate_and_schedule_cleanup(available_ship.id)
 
-        if available_ship:
-            # Check if this session already has access to this ship
-            existing_session = await db_service.get_session_ship(
-                session_id, available_ship.id
-            )
+                    logger.info(
+                        f"Session {session_id} joined ship {available_ship.id}, expires at {expires_at}"
+                    )
+                    return available_ship
+        else:
+            logger.info(f"force_create=True, skipping reuse logic for session {session_id}")
 
-            if existing_session:
-                # Update last activity and return existing ship
-                await db_service.update_session_activity(session_id, available_ship.id)
-                return available_ship
-            else:
-                # Calculate expiration time for this session
-                expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl)
-
-                # Add this session to the ship
-                session_ship = SessionShip(
-                    session_id=session_id,
-                    ship_id=available_ship.id,
-                    expires_at=expires_at,
-                    initial_ttl=request.ttl,
-                )
-                await db_service.create_session_ship(session_ship)
-                available_ship = await db_service.increment_ship_session_count(available_ship.id)
-
-                # Recalculate ship's TTL based on all sessions' expiration times
-                await self._recalculate_and_schedule_cleanup(available_ship.id)
-
-                logger.info(
-                    f"Session {session_id} joined ship {available_ship.id}, expires at {expires_at}"
-                )
-                return available_ship
-
-        # Fourth, no available ship found, create a new one
+        # Fourth (or First if force_create), no available ship found, create a new one
         # Check ship limits
         if settings.behavior_after_max_ship == "reject":
             active_count = await db_service.count_active_ships()

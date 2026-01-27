@@ -52,22 +52,33 @@ const closeDropdownWithDelay = () => {
         <p class="text-blue-400 mt-1 text-sm">监控和管理所有的用户会话连接</p>
       </div>
 
-      <button
-        @click="refresh"
-        :disabled="loading"
-        class="btn-secondary flex items-center justify-center gap-2 px-4 py-2.5 flex-1 sm:flex-none"
-      >
-        <svg 
-          class="w-4 h-4 transition-transform duration-500" 
-          :class="{ 'animate-spin': loading }"
-          fill="none" 
-          stroke="currentColor" 
-          viewBox="0 0 24 24"
+      <div class="flex gap-3 w-full sm:w-auto">
+        <button
+          @click="refresh"
+          :disabled="loading"
+          class="btn-secondary flex items-center justify-center gap-2 px-4 py-2.5 flex-1 sm:flex-none"
         >
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-        刷新数据
-      </button>
+          <svg
+            class="w-4 h-4 transition-transform duration-500"
+            :class="{ 'animate-spin': loading }"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          刷新数据
+        </button>
+        <router-link
+          to="/ships/create"
+          class="btn-primary flex items-center justify-center gap-2 px-6 py-2.5 flex-1 sm:flex-none font-medium"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          新建工作区
+        </router-link>
+      </div>
     </div>
 
     <!-- 筛选栏 -->
@@ -228,9 +239,18 @@ const closeDropdownWithDelay = () => {
         💬
       </div>
       <h3 class="text-xl font-bold text-[#0F4C75] mb-2">暂无会话记录</h3>
-      <p class="text-slate-500 max-w-md mx-auto">
-        当前没有活动的会话连接。所有的用户交互和终端连接都会显示在这里。
+      <p class="text-slate-500 mb-8 max-w-md mx-auto">
+        当前没有活动的会话连接。新建工作区来开始您的工作吧。
       </p>
+      <router-link
+        to="/ships/create"
+        class="btn-primary px-8 py-3 flex items-center gap-2 text-lg"
+      >
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+        </svg>
+        新建工作区
+      </router-link>
     </div>
 
     <!-- 删除确认弹窗 -->

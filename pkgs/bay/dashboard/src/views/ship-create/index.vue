@@ -2,12 +2,12 @@
 import { useCreateShip } from './useCreateShip'
 
 const {
+  createMode,
   ttlMinutes,
   maxSessionNum,
   cpus,
   memory,
   disk,
-  showAdvanced,
   submitting,
   ttlPresets,
   errors,
@@ -21,12 +21,12 @@ const {
   <div class="max-w-2xl mx-auto space-y-8">
     <!-- 面包屑导航 -->
     <nav class="flex items-center space-x-2 text-sm text-slate-500">
-      <router-link to="/ships" class="hover:text-[#3282B8] transition-colors flex items-center gap-1">
+      <router-link to="/sessions" class="hover:text-[#3282B8] transition-colors flex items-center gap-1">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
-        容器列表
+        会话管理
       </router-link>
       <span class="text-slate-300">/</span>
-      <span class="text-[#0F4C75] font-medium font-mono">创建容器</span>
+      <span class="text-[#0F4C75] font-medium font-mono">新建工作区</span>
     </nav>
 
     <!-- 表单卡片 -->
@@ -36,12 +36,89 @@ const {
           <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
         </div>
         <div>
-          <h1 class="text-2xl font-bold text-[#0F4C75]">创建新容器</h1>
-          <p class="text-sm text-slate-500 mt-1">配置并启动一个新的容器实例以运行您的应用</p>
+          <h1 class="text-2xl font-bold text-[#0F4C75]">新建工作区</h1>
+          <p class="text-sm text-slate-500 mt-1">配置并获取一个工作环境</p>
         </div>
       </div>
 
       <form @submit.prevent="handleSubmit" class="p-8 space-y-8">
+        <!-- 模式选择器 -->
+        <div class="space-y-4">
+          <label class="block text-sm font-semibold text-[#0F4C75] uppercase tracking-wider">
+            创建模式
+          </label>
+          <div class="grid grid-cols-2 gap-4">
+            <!-- 快速模式 -->
+            <button
+              type="button"
+              @click="createMode = 'quick'"
+              :class="[
+                'relative p-4 rounded-xl border-2 transition-all duration-200 text-left',
+                createMode === 'quick'
+                  ? 'border-[#3282B8] bg-blue-50/50 shadow-md'
+                  : 'border-slate-200 hover:border-blue-200 hover:bg-slate-50'
+              ]"
+            >
+              <div class="flex items-start gap-3">
+                <div :class="[
+                  'w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0',
+                  createMode === 'quick' ? 'bg-[#3282B8] text-white' : 'bg-slate-100 text-slate-500'
+                ]">
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 :class="['font-semibold', createMode === 'quick' ? 'text-[#0F4C75]' : 'text-slate-700']">
+                    快速模式
+                  </h3>
+                  <p class="text-sm text-slate-500 mt-1">系统自动分配可用容器或创建新容器</p>
+                </div>
+              </div>
+              <div v-if="createMode === 'quick'" class="absolute top-2 right-2">
+                <svg class="w-5 h-5 text-[#3282B8]" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                </svg>
+              </div>
+            </button>
+
+            <!-- 自定义模式 -->
+            <button
+              type="button"
+              @click="createMode = 'custom'"
+              :class="[
+                'relative p-4 rounded-xl border-2 transition-all duration-200 text-left',
+                createMode === 'custom'
+                  ? 'border-[#3282B8] bg-blue-50/50 shadow-md'
+                  : 'border-slate-200 hover:border-blue-200 hover:bg-slate-50'
+              ]"
+            >
+              <div class="flex items-start gap-3">
+                <div :class="[
+                  'w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0',
+                  createMode === 'custom' ? 'bg-[#3282B8] text-white' : 'bg-slate-100 text-slate-500'
+                ]">
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 :class="['font-semibold', createMode === 'custom' ? 'text-[#0F4C75]' : 'text-slate-700']">
+                    自定义模式
+                  </h3>
+                  <p class="text-sm text-slate-500 mt-1">自定义配置并强制创建新容器</p>
+                </div>
+              </div>
+              <div v-if="createMode === 'custom'" class="absolute top-2 right-2">
+                <svg class="w-5 h-5 text-[#3282B8]" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                </svg>
+              </div>
+            </button>
+          </div>
+        </div>
+
         <!-- TTL 配置 -->
         <div class="space-y-4">
           <label class="block text-sm font-semibold text-[#0F4C75] uppercase tracking-wider">
@@ -83,12 +160,24 @@ const {
           </div>
         </div>
 
-        <!-- 最大会话数 -->
-        <div class="space-y-4">
-          <label class="block text-sm font-semibold text-[#0F4C75] uppercase tracking-wider">
-            最大会话数
-          </label>
+        <!-- 自定义模式下的高级配置 -->
+        <div v-if="createMode === 'custom'" class="space-y-6">
+          <!-- 说明文字 -->
+          <div class="bg-green-50 border border-green-100 rounded-lg p-4 flex items-start gap-3">
+            <svg class="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div class="text-sm text-green-700">
+              <p class="font-medium">自定义模式：您的配置将被完整应用</p>
+              <p class="mt-1 text-green-600">系统将跳过容器复用逻辑，直接创建一个符合您配置要求的新容器。</p>
+            </div>
+          </div>
+
+          <!-- 最大会话数 -->
           <div class="bg-slate-50 rounded-xl p-6 border border-slate-100">
+            <label class="block text-sm font-semibold text-[#0F4C75] uppercase tracking-wider mb-4">
+              最大会话数
+            </label>
             <div class="flex items-center gap-6">
               <div class="relative w-32">
                 <input
@@ -106,36 +195,13 @@ const {
               {{ errors.maxSessionNum }}
             </p>
           </div>
-        </div>
 
-        <!-- 高级配置折叠 -->
-        <div class="border-t border-slate-100 pt-6">
-          <button
-            type="button"
-            @click="showAdvanced = !showAdvanced"
-            class="flex items-center gap-2 text-slate-500 hover:text-[#3282B8] transition-colors font-medium"
-          >
-            <svg 
-              class="w-5 h-5 transition-transform duration-300" 
-              :class="{ 'rotate-90': showAdvanced }"
-              fill="none" 
-              stroke="currentColor" 
-              viewBox="0 0 24 24"
-            >
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
-            高级资源配置
-          </button>
-
-          <transition
-            enter-active-class="transition duration-200 ease-out"
-            enter-from-class="transform scale-y-95 opacity-0"
-            enter-to-class="transform scale-y-100 opacity-100"
-            leave-active-class="transition duration-150 ease-in"
-            leave-from-class="transform scale-y-100 opacity-100"
-            leave-to-class="transform scale-y-95 opacity-0"
-          >
-            <div v-if="showAdvanced" class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-50 rounded-xl p-6 border border-slate-100">
+          <!-- 资源配置 -->
+          <div class="bg-slate-50 rounded-xl p-6 border border-slate-100">
+            <label class="block text-sm font-semibold text-[#0F4C75] uppercase tracking-wider mb-4">
+              资源限制
+            </label>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
               <!-- CPU -->
               <div class="space-y-2">
                 <label class="block text-sm font-medium text-slate-700">CPU 核心数</label>
@@ -177,7 +243,18 @@ const {
                 <p v-if="errors.disk" class="text-red-500 text-xs mt-1">{{ errors.disk }}</p>
               </div>
             </div>
-          </transition>
+          </div>
+        </div>
+
+        <!-- 快速模式提示 -->
+        <div v-else class="bg-blue-50 border border-blue-100 rounded-lg p-4 flex items-start gap-3">
+          <svg class="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div class="text-sm text-blue-700">
+            <p class="font-medium">快速模式：系统自动优化资源分配</p>
+            <p class="mt-1 text-blue-600">系统会尝试分配已有的可用容器给您使用，如果没有可用容器则会自动创建新容器。</p>
+          </div>
         </div>
 
         <!-- 操作按钮 -->
@@ -199,7 +276,7 @@ const {
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
             <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
-            {{ submitting ? '创建中...' : '立即创建' }}
+            {{ submitting ? '创建中...' : '立即开始' }}
           </button>
         </div>
       </form>
