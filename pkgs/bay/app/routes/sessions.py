@@ -227,6 +227,9 @@ async def get_execution_history(
     success_only: bool = False,
     limit: int = 100,
     offset: int = 0,
+    tags: Optional[str] = None,
+    has_notes: bool = False,
+    has_description: bool = False,
     token: str = Depends(verify_token),
 ):
     """Get execution history for a session.
@@ -240,6 +243,9 @@ async def get_execution_history(
         success_only: If True, only return successful executions
         limit: Maximum number of entries to return
         offset: Number of entries to skip
+        tags: Filter by tags (comma-separated, matches if any tag is present)
+        has_notes: If True, only return entries with notes
+        has_description: If True, only return entries with description
     """
     entries, total = await db_service.get_execution_history(
         session_id=session_id,
@@ -247,6 +253,9 @@ async def get_execution_history(
         success_only=success_only,
         limit=limit,
         offset=offset,
+        tags=tags,
+        has_notes=has_notes,
+        has_description=has_description,
     )
 
     return ExecutionHistoryResponse(

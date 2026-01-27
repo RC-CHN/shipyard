@@ -272,6 +272,9 @@ class Sandbox:
         exec_type: Optional[str] = None,
         success_only: bool = False,
         limit: int = 100,
+        tags: Optional[str] = None,
+        has_notes: bool = False,
+        has_description: bool = False,
     ) -> Dict[str, Any]:
         """
         Get execution history for this session.
@@ -282,6 +285,9 @@ class Sandbox:
             exec_type: Filter by 'python' or 'shell'
             success_only: Only return successful executions
             limit: Maximum entries to return
+            tags: Filter by tags (comma-separated, matches if any tag is present)
+            has_notes: Only return entries with notes
+            has_description: Only return entries with description
 
         Returns:
             Dict with 'entries' and 'total'
@@ -294,6 +300,12 @@ class Sandbox:
             params["exec_type"] = exec_type
         if success_only:
             params["success_only"] = "true"
+        if tags:
+            params["tags"] = tags
+        if has_notes:
+            params["has_notes"] = "true"
+        if has_description:
+            params["has_description"] = "true"
 
         async with self._http.get(
             f"{self.endpoint}/sessions/{self.session_id}/history",

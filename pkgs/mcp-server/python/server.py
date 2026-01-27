@@ -111,12 +111,18 @@ if not SDK_AVAILABLE:
                     error = await resp.text()
                     raise RuntimeError(f"Failed to extend TTL: {error}")
 
-        async def get_execution_history(self, exec_type=None, success_only=False, limit=100):
+        async def get_execution_history(self, exec_type=None, success_only=False, limit=100, tags=None, has_notes=False, has_description=False):
             params = {"limit": limit}
             if exec_type:
                 params["exec_type"] = exec_type
             if success_only:
                 params["success_only"] = "true"
+            if tags:
+                params["tags"] = tags
+            if has_notes:
+                params["has_notes"] = "true"
+            if has_description:
+                params["has_description"] = "true"
             async with self._http.get(
                 f"{self.endpoint}/sessions/{self.session_id}/history",
                 params=params
@@ -415,12 +421,24 @@ if FASTMCP_AVAILABLE:
 
     @mcp.tool()
     async def get_execution_history(
-        exec_type: str = None, success_only: bool = False, limit: int = 50, ctx: Context = None
+        exec_type: str = None, success_only: bool = False, limit: int = 50,
+        tags: str = None, has_notes: bool = False, has_description: bool = False,
+        ctx: Context = None
     ) -> str:
-        """Get execution history for this session."""
+        """Get execution history for this session.
+
+        Args:
+            exec_type: Filter by 'python' or 'shell' (optional)
+            success_only: Only return successful executions
+            limit: Maximum entries to return (default: 50)
+            tags: Filter by tags (comma-separated, matches if any tag is present)
+            has_notes: Only return entries with notes
+            has_description: Only return entries with description
+        """
         sandbox = await get_or_create_sandbox(ctx)
         history = await sandbox.get_execution_history(
-            exec_type=exec_type, success_only=success_only, limit=limit
+            exec_type=exec_type, success_only=success_only, limit=limit,
+            tags=tags, has_notes=has_notes, has_description=has_description
         )
 
         entries = history.get("entries", [])
@@ -435,7 +453,13 @@ if FASTMCP_AVAILABLE:
             code = entry.get("code", "")[:50]  # Truncate long code
             if len(entry.get("code", "")) > 50:
                 code += "..."
-            lines.append(f"  {status} [{exec_t}] {time_ms}ms: {code}")
+            meta = []
+            if entry.get("tags"):
+                meta.append(f"tags:{entry.get('tags')}")
+            if entry.get("notes"):
+                meta.append("has_notes")
+            meta_str = f" [{', '.join(meta)}]" if meta else ""
+            lines.append(f"  {status} [{exec_t}] {time_ms}ms{meta_str}: {code}")
 
         return "\n".join(lines)
 
@@ -624,7 +648,10 @@ class ShipyardMCPServer:
             {"name": "get_execution_history", "description": "Get execution history",
              "inputSchema": {"type": "object", "properties": {
                  "exec_type": {"type": "string"}, "success_only": {"type": "boolean"},
-                 "limit": {"type": "integer", "default": 50}}}},
+                 "limit": {"type": "integer", "default": 50},
+                 "tags": {"type": "string", "description": "Filter by tags (comma-separated)"},
+                 "has_notes": {"type": "boolean", "description": "Only entries with notes"},
+                 "has_description": {"type": "boolean", "description": "Only entries with description"}}}},
             {"name": "get_execution", "description": "Get specific execution by ID",
              "inputSchema": {"type": "object", "properties": {
                  "execution_id": {"type": "string", "description": "Execution ID"}}, "required": ["execution_id"]}},
@@ -666,7 +693,8 @@ class ShipyardMCPServer:
                 text = f"Session ID: {self.sandbox.session_id}\nShip ID: {self.sandbox.ship_id}"
             elif name == "get_execution_history":
                 history = await self.sandbox.get_execution_history(
-                    args.get("exec_type"), args.get("success_only", False), args.get("limit", 50))
+                    args.get("exec_type"), args.get("success_only", False), args.get("limit", 50),
+                    args.get("tags"), args.get("has_notes", False), args.get("has_description", False))
                 entries = history.get("entries", [])
                 if not entries:
                     text = "No history"
@@ -677,7 +705,13 @@ class ShipyardMCPServer:
                         code = e.get("code", "")[:50]
                         if len(e.get("code", "")) > 50:
                             code += "..."
-                        lines.append(f"  {s} [{e.get('exec_type', '?')}] {e.get('execution_time_ms', 0)}ms: {code}")
+                        meta = []
+                        if e.get("tags"):
+                            meta.append(f"tags:{e.get('tags')}")
+                        if e.get("notes"):
+                            meta.append("has_notes")
+                        meta_str = f" [{', '.join(meta)}]" if meta else ""
+                        lines.append(f"  {s} [{e.get('exec_type', '?')}] {e.get('execution_time_ms', 0)}ms{meta_str}: {code}")
                     text = "\n".join(lines)
             elif name == "get_execution":
                 try:

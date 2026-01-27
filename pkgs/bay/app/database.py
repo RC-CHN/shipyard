@@ -410,8 +410,22 @@ class DatabaseService:
         success_only: bool = False,
         limit: int = 100,
         offset: int = 0,
+        tags: Optional[str] = None,
+        has_notes: bool = False,
+        has_description: bool = False,
     ) -> tuple[List[ExecutionHistory], int]:
-        """Get execution history for a session."""
+        """Get execution history for a session.
+
+        Args:
+            session_id: The session ID
+            exec_type: Filter by 'python' or 'shell'
+            success_only: Only return successful executions
+            limit: Maximum entries to return
+            offset: Number of entries to skip
+            tags: Filter by tags (comma-separated, matches if any tag is present)
+            has_notes: Only return entries with notes
+            has_description: Only return entries with description
+        """
         session = self.get_session()
         try:
             # Build query
@@ -420,6 +434,19 @@ class DatabaseService:
                 conditions.append(ExecutionHistory.exec_type == exec_type)
             if success_only:
                 conditions.append(ExecutionHistory.success == True)  # noqa: E712
+            if has_notes:
+                conditions.append(ExecutionHistory.notes != None)  # noqa: E711
+                conditions.append(ExecutionHistory.notes != "")
+            if has_description:
+                conditions.append(ExecutionHistory.description != None)  # noqa: E711
+                conditions.append(ExecutionHistory.description != "")
+            if tags:
+                # Match any of the provided tags
+                tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+                if tag_list:
+                    from sqlalchemy import or_
+                    tag_conditions = [ExecutionHistory.tags.contains(tag) for tag in tag_list]
+                    conditions.append(or_(*tag_conditions))
 
             # Count total
             count_stmt = select(ExecutionHistory).where(*conditions)

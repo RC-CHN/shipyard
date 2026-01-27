@@ -370,6 +370,9 @@ async def get_execution_history(
     exec_type: str = None,
     success_only: bool = False,
     limit: int = 50,
+    tags: str = None,
+    has_notes: bool = False,
+    has_description: bool = False,
     ctx: Context = None,
 ) -> str:
     """Get execution history for this session.
@@ -380,6 +383,9 @@ async def get_execution_history(
         exec_type: Filter by 'python' or 'shell' (optional)
         success_only: Only return successful executions
         limit: Maximum entries to return (default: 50)
+        tags: Filter by tags (comma-separated, matches if any tag is present)
+        has_notes: Only return entries with notes
+        has_description: Only return entries with description
 
     Returns:
         Execution history entries
@@ -389,6 +395,9 @@ async def get_execution_history(
         exec_type=exec_type,
         success_only=success_only,
         limit=limit,
+        tags=tags,
+        has_notes=has_notes,
+        has_description=has_description,
     )
 
     entries = history.get("entries", [])
@@ -403,7 +412,14 @@ async def get_execution_history(
         code = entry.get("code", "")[:50]  # Truncate long code
         if len(entry.get("code", "")) > 50:
             code += "..."
-        lines.append(f"  {status} [{exec_t}] {time_ms}ms: {code}")
+        # Show metadata if present
+        meta = []
+        if entry.get("tags"):
+            meta.append(f"tags:{entry.get('tags')}")
+        if entry.get("notes"):
+            meta.append("has_notes")
+        meta_str = f" [{', '.join(meta)}]" if meta else ""
+        lines.append(f"  {status} [{exec_t}] {time_ms}ms{meta_str}: {code}")
 
     return "\n".join(lines)
 
