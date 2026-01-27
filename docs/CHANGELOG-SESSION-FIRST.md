@@ -850,3 +850,261 @@ async def test_http_mode_isolation():
             result = await call_tool(client_b, "execute_python", {"code": "print(x)"})
             assert "NameError" in result
 ```
+
+---
+
+## 技能库增强（Skill Library Enhancement）
+
+### 问题背景
+
+原有的执行历史功能仅提供基础的 `get_execution_history` 查询，无法满足 Agent 构建技能库的完整需求：
+
+1. **执行记录不完整**: 无法精确获取单条执行的完整代码
+2. **缺乏标注能力**: Agent 无法为执行记录添加描述、标签或笔记
+3. **查询粒度粗**: 无法按标签或有无笔记过滤
+
+### 解决方案
+
+基于 VOYAGER、Reflexion、LearnAct 论文的需求分析，增强执行历史功能：
+
+**核心原则**: Sandbox 是执行环境，提供完整的执行素材；Agent 负责分析和学习。
+
+### 新增功能
+
+#### 1. 增强执行返回值
+
+`execute_python` 和 `execute_shell` 新增参数：
+
+```python
+@mcp.tool()
+async def execute_python(
+    code: str,
+    timeout: int = 30,
+    include_code: bool = False,    # 返回执行的代码和 execution_id
+    description: str = None,       # 代码描述（存入执行历史）
+    tags: str = None,              # 标签（逗号分隔）
+) -> str:
+    """执行 Python 代码
+
+    当 include_code=True 时，返回格式：
+    execution_id: abc-123
+    Code:
+    print('hello')
+
+    Output:
+    hello
+
+    Execution time: 5ms
+    """
+```
+
+#### 2. 精确查询工具
+
+**get_execution**: 按 ID 查询单条记录
+```python
+@mcp.tool()
+async def get_execution(execution_id: str) -> str:
+    """获取指定 ID 的执行记录的完整信息"""
+```
+
+**get_last_execution**: 获取最近一次执行
+```python
+@mcp.tool()
+async def get_last_execution(exec_type: str = None) -> str:
+    """获取最近一次执行的完整记录，可按类型过滤"""
+```
+
+#### 3. 标注工具
+
+**annotate_execution**: 为执行记录添加标注
+```python
+@mcp.tool()
+async def annotate_execution(
+    execution_id: str,
+    description: str = None,  # 描述
+    tags: str = None,         # 标签
+    notes: str = None,        # Agent 笔记
+) -> str:
+    """为执行记录添加/更新元数据"""
+```
+
+#### 4. 增强查询
+
+**get_execution_history** 新增过滤参数：
+```python
+@mcp.tool()
+async def get_execution_history(
+    exec_type: str = None,
+    success_only: bool = False,
+    limit: int = 50,
+    tags: str = None,           # 按标签过滤（任意匹配）
+    has_notes: bool = False,    # 只返回有笔记的
+    has_description: bool = False,  # 只返回有描述的
+) -> str:
+```
+
+### 数据模型变更
+
+**ExecutionHistory 新增字段：**
+```python
+class ExecutionHistory(SQLModel, table=True):
+    # ... 原有字段 ...
+    description: Optional[str]  # 执行描述
+    tags: Optional[str]         # 标签（逗号分隔）
+    notes: Optional[str]        # Agent 笔记
+```
+
+**ExecutionHistoryEntry 同步更新：**
+```python
+class ExecutionHistoryEntry(BaseModel):
+    # ... 原有字段 ...
+    description: Optional[str] = None
+    tags: Optional[str] = None
+    notes: Optional[str] = None
+```
+
+### 数据库迁移
+
+新增迁移脚本：`pkgs/bay/alembic/versions/001_add_execution_history_metadata.py`
+
+```python
+def upgrade():
+    op.add_column('execution_history', sa.Column('description', sa.String()))
+    op.add_column('execution_history', sa.Column('tags', sa.String()))
+    op.add_column('execution_history', sa.Column('notes', sa.String()))
+```
+
+### API 变更
+
+**新增端点：**
+- `GET /sessions/{session_id}/history/{execution_id}` - 获取单条记录
+- `GET /sessions/{session_id}/history/last` - 获取最近一条
+- `PATCH /sessions/{session_id}/history/{execution_id}` - 更新标注
+
+**更新端点：**
+- `GET /sessions/{session_id}/history` - 新增 `tags`, `has_notes`, `has_description` 参数
+
+### SDK 变更
+
+**Sandbox 类新增方法：**
+```python
+async def get_execution(self, execution_id: str) -> Dict
+async def get_last_execution(self, exec_type: str = None) -> Dict
+async def annotate_execution(
+    self,
+    execution_id: str,
+    description: str = None,
+    tags: str = None,
+    notes: str = None,
+) -> Dict
+```
+
+**get_execution_history 新增参数：**
+```python
+async def get_execution_history(
+    self,
+    exec_type: str = None,
+    success_only: bool = False,
+    limit: int = 100,
+    tags: str = None,           # 新增
+    has_notes: bool = False,    # 新增
+    has_description: bool = False,  # 新增
+) -> Dict
+```
+
+**PythonExecutor/ShellExecutor 新增参数：**
+```python
+async def exec(
+    self,
+    code: str,
+    timeout: int = 30,
+    description: str = None,  # 新增
+    tags: str = None,         # 新增
+) -> ExecResult
+```
+
+**ExecResult 新增字段：**
+```python
+@dataclass
+class ExecResult:
+    # ... 原有字段 ...
+    execution_id: Optional[str] = None  # 新增：用于精确查询
+```
+
+### 使用示例
+
+**基础工作流：**
+```python
+# 1. 执行代码（自动记录）
+result = await sandbox.python.exec(
+    "import pandas as pd; df = pd.read_csv('data.csv')",
+    description="加载数据文件",
+    tags="data-processing,pandas"
+)
+
+# 2. 获取完整记录
+entry = await sandbox.get_last_execution()
+print(entry["code"])  # 完整代码
+
+# 3. 添加笔记
+await sandbox.annotate_execution(
+    entry["id"],
+    notes="这段代码可以复用于任何 CSV 文件加载"
+)
+```
+
+**技能库构建：**
+```python
+# 获取所有带笔记的成功执行（这些是 Agent 认为有价值的）
+history = await sandbox.get_execution_history(
+    success_only=True,
+    has_notes=True,
+)
+
+# 构建技能库
+for entry in history["entries"]:
+    skill_library.add(
+        code=entry["code"],
+        description=entry["description"],
+        tags=entry["tags"].split(",") if entry["tags"] else [],
+        notes=entry["notes"],
+    )
+```
+
+**按标签检索：**
+```python
+# 获取所有数据处理相关的执行
+history = await sandbox.get_execution_history(
+    tags="data-processing,etl",  # 匹配任一标签
+    success_only=True,
+)
+```
+
+### MCP 工具列表（更新后）
+
+| 工具 | 描述 | 新增参数 |
+|------|------|----------|
+| `execute_python` | 执行 Python 代码 | `include_code`, `description`, `tags` |
+| `execute_shell` | 执行 Shell 命令 | `include_code`, `description`, `tags` |
+| `get_execution` | 获取单条执行记录 | (新工具) |
+| `get_last_execution` | 获取最近执行 | (新工具) |
+| `annotate_execution` | 标注执行记录 | (新工具) |
+| `get_execution_history` | 查询执行历史 | `tags`, `has_notes`, `has_description` |
+| `read_file` | 读取文件 | - |
+| `write_file` | 写入文件 | - |
+| `list_files` | 列出目录 | - |
+| `install_package` | 安装包 | - |
+| `get_sandbox_info` | 获取沙箱信息 | - |
+
+### 文件变更
+
+| 文件 | 变更类型 |
+|------|----------|
+| `pkgs/bay/app/models.py` | 模型扩展 |
+| `pkgs/bay/app/database.py` | 新增方法 |
+| `pkgs/bay/app/routes/sessions.py` | 新增端点 |
+| `pkgs/bay/app/services/ship/service.py` | 支持元数据 |
+| `pkgs/bay/app/mcp/server.py` | 新增工具 |
+| `pkgs/mcp-server/python/server.py` | 同步更新 |
+| `shipyard_python_sdk/shipyard/sandbox.py` | SDK 更新 |
+| `pkgs/bay/alembic/versions/001_*.py` | 数据库迁移 |

@@ -132,12 +132,42 @@ The MCP server exposes the following tools:
 | `list_files` | List directory contents |
 | `install_package` | Install Python packages via pip |
 | `get_sandbox_info` | Get current sandbox information |
-| `get_execution_history` | View past executions |
+| `get_execution_history` | View past executions (supports tag/notes filtering) |
+| `get_execution` | Get specific execution by ID |
+| `get_last_execution` | Get most recent execution |
+| `annotate_execution` | Add notes/tags to an execution record |
+
+### Skill Library Support
+
+The tools support building Agent skill libraries (inspired by VOYAGER):
+
+```python
+# Execute with metadata
+execute_python(
+    code="import pandas as pd; df = pd.read_csv('data.csv')",
+    include_code=True,           # Return code and execution_id
+    description="Load CSV file",
+    tags="data-processing,pandas"
+)
+
+# Annotate after execution
+annotate_execution(
+    execution_id="abc-123",
+    notes="Reusable for any CSV loading task"
+)
+
+# Query annotated executions
+get_execution_history(
+    success_only=True,
+    has_notes=True,    # Only entries with notes
+    tags="pandas"      # Filter by tag
+)
+```
 
 ### Example: execute_python
 
 ```python
-# Request
+# Basic execution
 {
     "tool": "execute_python",
     "arguments": {
@@ -148,6 +178,20 @@ The MCP server exposes the following tools:
 
 # Response
 "Output:\n   a\n0  1\n1  2\n2  3"
+
+# With skill library metadata
+{
+    "tool": "execute_python",
+    "arguments": {
+        "code": "df = pd.read_csv('data.csv')",
+        "include_code": true,
+        "description": "Load CSV data",
+        "tags": "data-processing,pandas"
+    }
+}
+
+# Response
+"execution_id: abc-123\n\nCode:\ndf = pd.read_csv('data.csv')\n\nExecuted successfully (no output)\n\nExecution time: 15ms"
 ```
 
 ### Example: execute_shell
