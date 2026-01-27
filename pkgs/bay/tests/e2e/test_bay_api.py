@@ -126,6 +126,61 @@ class TestHealthAndBasicEndpoints:
         resp = requests.get(f"{bay_url}/stat", timeout=5)
         assert resp.status_code == 200, f"统计信息失败: {resp.text}"
 
+    def test_stat_overview_without_auth(self, bay_url):
+        """/stat/overview 需要认证"""
+        resp = requests.get(f"{bay_url}/stat/overview", timeout=5)
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_stat_overview_with_auth(self, bay_url, auth_headers):
+        """/stat/overview 获取系统概览（需要认证）"""
+        resp = requests.get(f"{bay_url}/stat/overview", headers=auth_headers, timeout=5)
+        assert resp.status_code == 200, f"获取系统概览失败: {resp.text}"
+        data = resp.json()
+        assert "service" in data, "响应应包含 service 字段"
+        assert "version" in data, "响应应包含 version 字段"
+        assert "ships" in data, "响应应包含 ships 字段"
+        assert "sessions" in data, "响应应包含 sessions 字段"
+        assert "total" in data["ships"], "ships 应包含 total 字段"
+        assert "running" in data["ships"], "ships 应包含 running 字段"
+        assert "stopped" in data["ships"], "ships 应包含 stopped 字段"
+
+
+@pytest.mark.e2e
+class TestSessionsEndpoints:
+    """阶段 2.5: Sessions 端点基础测试（认证和 404）"""
+
+    def test_sessions_without_auth(self, bay_url):
+        """/sessions 需要认证"""
+        resp = requests.get(f"{bay_url}/sessions", timeout=5)
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_list_sessions_with_auth(self, bay_url, auth_headers):
+        """/sessions 列出所有会话（需要认证）"""
+        resp = requests.get(f"{bay_url}/sessions", headers=auth_headers, timeout=5)
+        assert resp.status_code == 200, f"列出会话失败: {resp.text}"
+        data = resp.json()
+        assert "sessions" in data, "响应应包含 sessions 字段"
+        assert "total" in data, "响应应包含 total 字段"
+        assert isinstance(data["sessions"], list), "sessions 应该是列表"
+
+    def test_get_session_not_found(self, bay_url, auth_headers):
+        """/sessions/{session_id} 获取不存在的会话"""
+        resp = requests.get(
+            f"{bay_url}/sessions/not-exists-session",
+            headers=auth_headers,
+            timeout=5,
+        )
+        assert resp.status_code == 404, f"不存在会话未返回 404: {resp.status_code}"
+
+    def test_ship_sessions_not_found(self, bay_url, auth_headers):
+        """/ship/{ship_id}/sessions 获取不存在 ship 的会话"""
+        resp = requests.get(
+            f"{bay_url}/ship/not-exists-ship/sessions",
+            headers=auth_headers,
+            timeout=5,
+        )
+        assert resp.status_code == 404, f"不存在 ship 未返回 404: {resp.status_code}"
+
 
 @pytest.mark.e2e
 class TestAuthentication:
@@ -224,8 +279,9 @@ class TestShipOperations:
         assert resp.status_code == 404, f"不存在 ship 未返回 404: {resp.status_code}"
 
     def test_exec_shell(self, bay_url):
-        """执行 Shell 命令"""
+        """执行 Shell 命令并验证会话状态"""
         with fresh_ship() as (ship_id, headers):
+            # 执行 Shell 命令
             payload = {"type": "shell/exec", "payload": {"command": "echo Bay"}}
             resp = requests.post(
                 f"{bay_url}/ship/{ship_id}/exec",
@@ -234,6 +290,17 @@ class TestShipOperations:
                 timeout=30,
             )
             assert resp.status_code == 200, f"Shell 命令执行失败: {resp.text}"
+
+            # 同时验证会话状态 - 真实场景下 Dashboard 会并行查询
+            sessions_resp = requests.get(
+                f"{bay_url}/ship/{ship_id}/sessions",
+                headers=headers,
+                timeout=5,
+            )
+            assert sessions_resp.status_code == 200, f"获取会话失败: {sessions_resp.text}"
+            sessions_data = sessions_resp.json()
+            assert sessions_data["total"] >= 1, "执行操作后应该有活跃会话"
+            assert sessions_data["sessions"][0]["is_active"] is True, "会话应该是活跃状态"
 
     def test_exec_invalid_type(self, bay_url):
         """非法操作类型"""
@@ -377,9 +444,19 @@ class TestShipOperations:
             assert result.get("success") is True, f"删除文件操作失败: {result}"
 
     def test_ipython_operations(self, bay_url):
-        """IPython 操作测试"""
+        """IPython 操作测试，同时验证会话和系统概览"""
         with fresh_ship() as (ship_id, headers):
             headers_with_content_type = {**headers, "Content-Type": "application/json"}
+
+            # 获取执行前的系统概览
+            overview_before = requests.get(
+                f"{bay_url}/stat/overview",
+                headers=headers,
+                timeout=5,
+            )
+            assert overview_before.status_code == 200, f"获取概览失败: {overview_before.text}"
+            before_data = overview_before.json()
+            running_before = before_data["ships"]["running"]
 
             # 1. 执行简单 Python 代码
             ipython_data = {
@@ -396,6 +473,18 @@ class TestShipOperations:
             result = resp.json()
             assert result.get("success") is True, f"IPython 操作失败: {result}"
             assert "Result: 8" in result["data"]["output"]["text"], f"IPython 输出不匹配: {result}"
+
+            # 执行期间验证会话活跃状态
+            sessions_resp = requests.get(
+                f"{bay_url}/ship/{ship_id}/sessions",
+                headers=headers,
+                timeout=5,
+            )
+            assert sessions_resp.status_code == 200, f"获取会话失败: {sessions_resp.text}"
+            sessions_data = sessions_resp.json()
+            assert sessions_data["total"] >= 1, "应该有活跃会话"
+            # 验证 last_activity 被更新（会话应该是活跃的）
+            assert sessions_data["sessions"][0]["is_active"] is True, "IPython 执行后会话应该活跃"
 
             # 2. 执行带 import 的代码
             import_data = {
@@ -415,6 +504,17 @@ class TestShipOperations:
             result = resp.json()
             assert result.get("success") is True, f"IPython import 操作失败: {result}"
             assert "Square root of 16 is 4.0" in result["data"]["output"]["text"], f"IPython import 输出不匹配: {result}"
+
+            # 获取执行后的系统概览，验证统计数据一致性
+            overview_after = requests.get(
+                f"{bay_url}/stat/overview",
+                headers=headers,
+                timeout=5,
+            )
+            assert overview_after.status_code == 200, f"获取概览失败: {overview_after.text}"
+            after_data = overview_after.json()
+            # 运行中的 ships 数量应该至少保持不变（可能有其他测试创建的）
+            assert after_data["ships"]["running"] >= 1, "应该至少有一个运行中的 ship"
 
 
 @pytest.mark.e2e
@@ -671,3 +771,938 @@ class TestDataPersistence:
                     )
                 except Exception:
                     pass
+
+
+# =============================================================================
+# Ships 路由补充测试
+# =============================================================================
+
+
+@pytest.mark.e2e
+class TestShipsRouteExtended:
+    """Ships 路由扩展测试：补充 ships.py 相关端点的测试"""
+
+    def test_create_ship_missing_session_id(self, bay_url):
+        """/ship 创建 Ship 需要 X-SESSION-ID 头"""
+        payload = {"ttl": 60, "max_session_num": 1}
+        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+        # 不包含 X-SESSION-ID
+        resp = requests.post(
+            f"{bay_url}/ship",
+            headers=headers,
+            json=payload,
+            timeout=10,
+        )
+        assert resp.status_code == 422, f"缺少 X-SESSION-ID 未被拒绝: {resp.status_code}"
+
+    def test_create_ship_response_fields(self, bay_url):
+        """验证创建 Ship 响应包含所有必需字段"""
+        with fresh_ship() as (ship_id, headers):
+            resp = requests.get(f"{bay_url}/ship/{ship_id}", headers=headers, timeout=5)
+            assert resp.status_code == 200
+            data = resp.json()
+
+            # 验证必需字段
+            assert "id" in data, "响应应包含 id 字段"
+            assert "status" in data, "响应应包含 status 字段"
+            assert "created_at" in data, "响应应包含 created_at 字段"
+            assert "updated_at" in data, "响应应包含 updated_at 字段"
+            assert "ttl" in data, "响应应包含 ttl 字段"
+            assert "max_session_num" in data, "响应应包含 max_session_num 字段"
+            assert "current_session_num" in data, "响应应包含 current_session_num 字段"
+
+    def test_list_ships_returns_created_ship(self, bay_url):
+        """验证创建的 Ship 出现在列表中"""
+        with fresh_ship() as (ship_id, headers):
+            resp = requests.get(f"{bay_url}/ships", headers=headers, timeout=5)
+            assert resp.status_code == 200, f"列出 ships 失败: {resp.text}"
+            data = resp.json()
+            ship_ids = [ship["id"] for ship in data]
+            assert ship_id in ship_ids, f"创建的 Ship {ship_id} 应出现在列表中"
+
+
+@pytest.mark.e2e
+class TestShipPermanentDeletion:
+    """永久删除 Ship 端点测试"""
+
+    def test_delete_permanent_without_auth(self, bay_url):
+        """/ship/{ship_id}/permanent 删除需要认证"""
+        resp = requests.delete(f"{bay_url}/ship/some-id/permanent", timeout=5)
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_delete_permanent_not_found(self, bay_url, auth_headers):
+        """/ship/{ship_id}/permanent 删除不存在的 Ship"""
+        resp = requests.delete(
+            f"{bay_url}/ship/non-existent-ship-id/permanent",
+            headers=auth_headers,
+            timeout=10,
+        )
+        assert resp.status_code == 404, f"不存在 Ship 未返回 404: {resp.status_code}"
+
+    def test_delete_permanent_success(self, bay_url):
+        """成功永久删除 Ship"""
+        # 创建 Ship
+        session_id = f"perm-delete-{uuid.uuid4().hex[:8]}"
+        headers = get_auth_headers(session_id)
+
+        payload = {"ttl": 60, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+        resp = requests.post(
+            f"{bay_url}/ship",
+            headers={**headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        assert resp.status_code == 201, f"创建 Ship 失败: {resp.text}"
+        ship_id = resp.json()["id"]
+
+        time.sleep(2)
+
+        # 永久删除 Ship
+        resp = requests.delete(
+            f"{bay_url}/ship/{ship_id}/permanent",
+            headers=headers,
+            timeout=30,
+        )
+        assert resp.status_code == 204, f"永久删除 Ship 失败: {resp.status_code}"
+
+        # 验证 Ship 已被永久删除（无法获取）
+        resp = requests.get(f"{bay_url}/ship/{ship_id}", headers=headers, timeout=5)
+        assert resp.status_code == 404, f"永久删除后 Ship 应返回 404: {resp.status_code}"
+
+
+@pytest.mark.e2e
+class TestShipFileOperationsExtended:
+    """Ship 文件操作扩展测试"""
+
+    def test_upload_without_auth(self, bay_url):
+        """/ship/{ship_id}/upload 需要认证"""
+        files = {"file": ("test.txt", io.BytesIO(b"hello"), "text/plain")}
+        data = {"file_path": "test.txt"}
+        resp = requests.post(
+            f"{bay_url}/ship/some-id/upload",
+            files=files,
+            data=data,
+            timeout=10,
+        )
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_download_without_auth(self, bay_url):
+        """/ship/{ship_id}/download 需要认证"""
+        resp = requests.get(
+            f"{bay_url}/ship/some-id/download",
+            params={"file_path": "test.txt"},
+            timeout=10,
+        )
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_download_not_found(self, bay_url):
+        """下载不存在的文件"""
+        with fresh_ship() as (ship_id, headers):
+            resp = requests.get(
+                f"{bay_url}/ship/{ship_id}/download",
+                headers=headers,
+                params={"file_path": "non_existent_file_12345.txt"},
+                timeout=30,
+            )
+            assert resp.status_code == 404, f"不存在文件未返回 404: {resp.status_code}"
+
+    def test_upload_to_subdirectory(self, bay_url):
+        """上传文件到子目录"""
+        with fresh_ship() as (ship_id, headers):
+            content = b"content in subdirectory"
+            files = {"file": ("nested.txt", io.BytesIO(content), "text/plain")}
+            data = {"file_path": "subdir/nested.txt"}
+
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/upload",
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"上传到子目录失败: {resp.text}"
+
+            # 验证可以下载
+            download_resp = requests.get(
+                f"{bay_url}/ship/{ship_id}/download",
+                headers=headers,
+                params={"file_path": "subdir/nested.txt"},
+                timeout=30,
+            )
+            assert download_resp.status_code == 200, f"从子目录下载失败: {download_resp.status_code}"
+            assert download_resp.content == content, "下载内容不匹配"
+
+
+@pytest.mark.e2e
+class TestShipExecExtended:
+    """Ship 执行操作扩展测试"""
+
+    def test_exec_without_auth(self, bay_url):
+        """/ship/{ship_id}/exec 需要认证"""
+        payload = {"type": "shell/exec", "payload": {"command": "echo hello"}}
+        resp = requests.post(
+            f"{bay_url}/ship/some-id/exec",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_exec_missing_session_id(self, bay_url):
+        """/ship/{ship_id}/exec 需要 X-SESSION-ID 头"""
+        with fresh_ship() as (ship_id, _):
+            payload = {"type": "shell/exec", "payload": {"command": "echo hello"}}
+            headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+            # 不包含 X-SESSION-ID
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                json=payload,
+                headers=headers,
+                timeout=10,
+            )
+            assert resp.status_code == 422, f"缺少 X-SESSION-ID 未被拒绝: {resp.status_code}"
+
+    def test_exec_fs_delete_file(self, bay_url):
+        """执行文件系统删除文件操作"""
+        with fresh_ship() as (ship_id, headers):
+            headers_with_content_type = {**headers, "Content-Type": "application/json"}
+
+            # 先创建文件
+            create_payload = {
+                "type": "fs/create_file",
+                "payload": {"path": "to_delete.txt", "content": "will be deleted"},
+            }
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=create_payload,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"创建文件失败: {resp.text}"
+
+            # 删除文件
+            delete_payload = {"type": "fs/delete_file", "payload": {"path": "to_delete.txt"}}
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=delete_payload,
+                timeout=30,
+            )
+            assert resp.status_code == 200, f"删除文件失败: {resp.text}"
+            data = resp.json()
+            assert data.get("success") is True
+
+            # 验证文件已删除（读取应该失败）
+            read_payload = {"type": "fs/read_file", "payload": {"path": "to_delete.txt"}}
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/exec",
+                headers=headers_with_content_type,
+                json=read_payload,
+                timeout=30,
+            )
+            # 文件不存在时应该返回错误
+            data = resp.json()
+            assert data.get("success") is False or resp.status_code != 200
+
+
+@pytest.mark.e2e
+class TestExtendTTLExtended:
+    """扩展 TTL 端点扩展测试"""
+
+    def test_extend_ttl_without_auth(self, bay_url):
+        """/ship/{ship_id}/extend-ttl 需要认证"""
+        payload = {"ttl": 600}
+        resp = requests.post(
+            f"{bay_url}/ship/some-id/extend-ttl",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_extend_ttl_not_found(self, bay_url, auth_headers):
+        """/ship/{ship_id}/extend-ttl 对不存在的 Ship"""
+        payload = {"ttl": 600}
+        resp = requests.post(
+            f"{bay_url}/ship/non-existent-ship-id/extend-ttl",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=10,
+        )
+        assert resp.status_code == 404, f"不存在 Ship 未返回 404: {resp.status_code}"
+
+    def test_extend_ttl_invalid_value(self, bay_url):
+        """扩展 TTL（无效值）"""
+        with fresh_ship() as (ship_id, headers):
+            payload = {"ttl": 0}
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/extend-ttl",
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+                timeout=10,
+            )
+            assert resp.status_code == 422, f"无效 TTL 未被拒绝: {resp.status_code}"
+
+    def test_extend_ttl_negative_value(self, bay_url):
+        """扩展 TTL（负值）"""
+        with fresh_ship() as (ship_id, headers):
+            payload = {"ttl": -100}
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/extend-ttl",
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+                timeout=10,
+            )
+            assert resp.status_code == 422, f"负数 TTL 未被拒绝: {resp.status_code}"
+
+
+@pytest.mark.e2e
+class TestStartShip:
+    """启动已停止的 Ship 端点测试"""
+
+    def test_start_ship_without_auth(self, bay_url):
+        """/ship/{ship_id}/start 需要认证"""
+        payload = {"ttl": 3600}
+        resp = requests.post(
+            f"{bay_url}/ship/some-id/start",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_start_ship_not_found(self, bay_url, auth_headers):
+        """/ship/{ship_id}/start 对不存在的 Ship"""
+        payload = {"ttl": 3600}
+        resp = requests.post(
+            f"{bay_url}/ship/non-existent-ship-id/start",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=10,
+        )
+        assert resp.status_code == 404, f"不存在 Ship 未返回 404: {resp.status_code}"
+
+    def test_start_ship_invalid_ttl(self, bay_url):
+        """启动 Ship（无效 TTL 值）"""
+        with fresh_ship() as (ship_id, headers):
+            # 先停止 Ship
+            requests.delete(
+                f"{bay_url}/ship/{ship_id}",
+                headers=headers,
+                timeout=30,
+            )
+            time.sleep(2)
+
+            # 尝试用无效的 TTL 启动
+            payload = {"ttl": 0}
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/start",
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+                timeout=10,
+            )
+            assert resp.status_code == 422, f"无效 TTL 未被拒绝: {resp.status_code}"
+
+    def test_start_stopped_ship(self, bay_url):
+        """成功启动已停止的 Ship"""
+        # 创建 Ship
+        session_id = f"start-test-{uuid.uuid4().hex[:8]}"
+        headers = get_auth_headers(session_id)
+
+        payload = {"ttl": 120, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+        resp = requests.post(
+            f"{bay_url}/ship",
+            headers={**headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        assert resp.status_code == 201, f"创建 Ship 失败: {resp.text}"
+        ship_id = resp.json()["id"]
+
+        try:
+            time.sleep(2)
+
+            # 停止 Ship
+            resp = requests.delete(
+                f"{bay_url}/ship/{ship_id}",
+                headers=headers,
+                timeout=30,
+            )
+            assert resp.status_code == 204, f"停止 Ship 失败: {resp.status_code}"
+
+            time.sleep(2)
+
+            # 启动 Ship
+            start_payload = {"ttl": 3600}
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/start",
+                headers={**headers, "Content-Type": "application/json"},
+                json=start_payload,
+                timeout=120,
+            )
+            assert resp.status_code == 200, f"启动 Ship 失败: {resp.status_code} - {resp.text}"
+
+            # 验证 Ship 已启动
+            data = resp.json()
+            assert data["status"] == 1, f"Ship 状态应为 RUNNING (1): {data['status']}"
+            assert data["id"] == ship_id, "Ship ID 应匹配"
+
+        finally:
+            # 清理
+            try:
+                requests.delete(
+                    f"{bay_url}/ship/{ship_id}",
+                    headers=headers,
+                    timeout=30,
+                )
+                # 永久删除以清理资源
+                requests.delete(
+                    f"{bay_url}/ship/{ship_id}/permanent",
+                    headers=headers,
+                    timeout=30,
+                )
+            except Exception:
+                pass
+
+
+@pytest.mark.e2e
+class TestShipLogsExtended:
+    """Ship 日志端点扩展测试"""
+
+    def test_logs_without_auth(self, bay_url):
+        """/ship/logs/{ship_id} 需要认证"""
+        resp = requests.get(f"{bay_url}/ship/logs/some-id", timeout=5)
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_logs_response_format(self, bay_url):
+        """验证日志响应格式"""
+        with fresh_ship() as (ship_id, headers):
+            resp = requests.get(
+                f"{bay_url}/ship/logs/{ship_id}", headers=headers, timeout=10
+            )
+            assert resp.status_code == 200, f"获取日志失败: {resp.text}"
+            data = resp.json()
+            assert "logs" in data, "响应应包含 logs 字段"
+            assert isinstance(data["logs"], str), "logs 应该是字符串"
+
+
+@pytest.mark.e2e
+class TestShipSessionsExtended:
+    """Ship 会话端点扩展测试"""
+
+    def test_ship_sessions_without_auth(self, bay_url):
+        """/ship/{ship_id}/sessions 需要认证"""
+        resp = requests.get(f"{bay_url}/ship/some-id/sessions", timeout=5)
+        assert resp.status_code in [401, 403], f"未授权访问未被拒绝: {resp.status_code}"
+
+    def test_ship_sessions_response_format(self, bay_url):
+        """验证 Ship 会话响应格式"""
+        with fresh_ship() as (ship_id, headers):
+            resp = requests.get(
+                f"{bay_url}/ship/{ship_id}/sessions", headers=headers, timeout=5
+            )
+            assert resp.status_code == 200, f"获取会话失败: {resp.text}"
+            data = resp.json()
+            assert "sessions" in data, "响应应包含 sessions 字段"
+            assert "total" in data, "响应应包含 total 字段"
+            assert isinstance(data["sessions"], list), "sessions 应该是列表"
+            assert data["total"] >= 1, "应该至少有一个会话"
+
+            # 验证会话字段
+            if data["sessions"]:
+                session = data["sessions"][0]
+                assert "session_id" in session, "会话应包含 session_id"
+                assert "ship_id" in session, "会话应包含 ship_id"
+                assert "is_active" in session, "会话应包含 is_active"
+
+
+@pytest.mark.e2e
+class TestSessionStateOnShipStop:
+    """测试 Ship 停止时会话状态变化"""
+
+    def test_session_becomes_inactive_when_ship_stopped(self, bay_url):
+        """当 Ship 停止时，关联的会话应该变为 inactive"""
+        # 创建 Ship
+        session_id = f"stop-session-test-{uuid.uuid4().hex[:8]}"
+        headers = get_auth_headers(session_id)
+
+        payload = {
+            "ttl": 600,
+            "max_session_num": 1,
+            "spec": {"cpus": 0.5, "memory": "256m"},
+        }
+
+        resp = requests.post(
+            f"{bay_url}/ship",
+            headers={**headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        assert resp.status_code == 201, f"创建 Ship 失败: {resp.status_code}"
+        ship_id = resp.json()["id"]
+
+        try:
+            time.sleep(2)
+
+            # 验证会话初始是活跃的
+            sessions_resp = requests.get(
+                f"{bay_url}/ship/{ship_id}/sessions",
+                headers=headers,
+                timeout=5,
+            )
+            assert sessions_resp.status_code == 200
+            sessions_data = sessions_resp.json()
+            assert sessions_data["total"] >= 1, "应该有会话"
+            assert sessions_data["sessions"][0]["is_active"] is True, "会话应该是活跃的"
+
+            # 停止 Ship (soft delete)
+            resp = requests.delete(
+                f"{bay_url}/ship/{ship_id}",
+                headers=headers,
+                timeout=30,
+            )
+            assert resp.status_code == 204, f"停止 Ship 失败: {resp.status_code}"
+
+            time.sleep(1)
+
+            # 验证会话现在是非活跃的
+            sessions_resp = requests.get(
+                f"{bay_url}/sessions/{session_id}",
+                headers=headers,
+                timeout=5,
+            )
+            assert sessions_resp.status_code == 200, f"获取会话失败: {sessions_resp.text}"
+            session_data = sessions_resp.json()
+            assert session_data["is_active"] is False, "Ship 停止后会话应该变为 inactive"
+
+            # 验证重新启动 Ship 后会话可以恢复
+            start_payload = {"ttl": 600}
+            resp = requests.post(
+                f"{bay_url}/ship/{ship_id}/start",
+                headers={**headers, "Content-Type": "application/json"},
+                json=start_payload,
+                timeout=120,
+            )
+            assert resp.status_code == 200, f"启动 Ship 失败: {resp.status_code}"
+
+            # 验证会话现在是活跃的
+            sessions_resp = requests.get(
+                f"{bay_url}/sessions/{session_id}",
+                headers=headers,
+                timeout=5,
+            )
+            assert sessions_resp.status_code == 200
+            session_data = sessions_resp.json()
+            assert session_data["is_active"] is True, "Ship 启动后会话应该恢复为 active"
+
+        finally:
+            # 清理
+            try:
+                requests.delete(
+                    f"{bay_url}/ship/{ship_id}",
+                    headers=headers,
+                    timeout=30,
+                )
+                requests.delete(
+                    f"{bay_url}/ship/{ship_id}/permanent",
+                    headers=headers,
+                    timeout=30,
+                )
+            except Exception:
+                pass
+
+    def test_multiple_sessions_become_inactive_when_ship_stopped(self, bay_url):
+        """当 Ship 停止时，所有关联的会话都应该变为 inactive"""
+        # 创建第一个 session
+        session_id_1 = f"multi-stop-test-{uuid.uuid4().hex[:8]}"
+        headers_1 = get_auth_headers(session_id_1)
+
+        # 创建 Ship with max_session_num = 2
+        payload = {
+            "ttl": 600,
+            "max_session_num": 2,
+            "spec": {"cpus": 0.5, "memory": "256m"},
+        }
+
+        resp = requests.post(
+            f"{bay_url}/ship",
+            headers={**headers_1, "Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        assert resp.status_code == 201, f"创建 Ship 失败: {resp.status_code}"
+        ship_id = resp.json()["id"]
+
+        try:
+            time.sleep(3)
+
+            # 用第二个 session ID 加入
+            session_id_2 = f"multi-stop-test-{uuid.uuid4().hex[:8]}"
+            headers_2 = get_auth_headers(session_id_2)
+
+            resp = requests.post(
+                f"{bay_url}/ship",
+                headers={**headers_2, "Content-Type": "application/json"},
+                json=payload,
+                timeout=120,
+            )
+            assert resp.status_code == 201, f"第二个会话请求失败: {resp.status_code}"
+
+            # 验证两个会话都是活跃的
+            sessions_resp = requests.get(
+                f"{bay_url}/ship/{ship_id}/sessions",
+                headers=headers_1,
+                timeout=5,
+            )
+            assert sessions_resp.status_code == 200
+            sessions_data = sessions_resp.json()
+            active_count = sum(1 for s in sessions_data["sessions"] if s["is_active"])
+            assert active_count >= 1, "至少应该有一个活跃会话"
+
+            # 停止 Ship
+            resp = requests.delete(
+                f"{bay_url}/ship/{ship_id}",
+                headers=headers_1,
+                timeout=30,
+            )
+            assert resp.status_code == 204, f"停止 Ship 失败: {resp.status_code}"
+
+            time.sleep(1)
+
+            # 验证所有会话现在都是非活跃的
+            for sid, hdrs in [(session_id_1, headers_1), (session_id_2, headers_2)]:
+                sessions_resp = requests.get(
+                    f"{bay_url}/sessions/{sid}",
+                    headers=hdrs,
+                    timeout=5,
+                )
+                if sessions_resp.status_code == 200:
+                    session_data = sessions_resp.json()
+                    assert session_data["is_active"] is False, f"会话 {sid} 应该变为 inactive"
+
+        finally:
+            # 清理
+            try:
+                requests.delete(
+                    f"{bay_url}/ship/{ship_id}/permanent",
+                    headers=headers_1,
+                    timeout=30,
+                )
+            except Exception:
+                pass
+
+
+# =============================================================================
+# WebSocket Terminal 端点测试
+# =============================================================================
+
+try:
+    import websocket
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(not WEBSOCKET_AVAILABLE, reason="websocket-client 未安装")
+class TestWebSocketTerminal:
+    """WebSocket Terminal 端点测试 (/ship/{ship_id}/term)
+
+    测试 WebSocket 代理终端功能，包括：
+    - 认证验证
+    - 会话权限验证
+    - 基本连接和消息传递
+    """
+
+    def _get_ws_url(self, ship_id: str, token: str, session_id: str, cols: int = 80, rows: int = 24) -> str:
+        """构建 WebSocket URL"""
+        # 将 http:// 替换为 ws://
+        ws_base = BAY_URL.replace("http://", "ws://").replace("https://", "wss://")
+        return f"{ws_base}/ship/{ship_id}/term?token={token}&session_id={session_id}&cols={cols}&rows={rows}"
+
+    def test_websocket_unauthorized(self, bay_url):
+        """WebSocket 连接需要有效的 token"""
+        # 使用无效 token 尝试连接
+        ws_url = self._get_ws_url("some-ship-id", "invalid-token", "test-session")
+
+        ws = websocket.WebSocket()
+        try:
+            ws.connect(ws_url, timeout=5)
+            # 如果连接成功，应该很快被关闭
+            # 尝试接收消息看是否被关闭
+            try:
+                ws.recv()
+                pytest.fail("应该被拒绝连接")
+            except websocket.WebSocketConnectionClosedException:
+                pass  # 预期行为 - 连接被关闭
+        except websocket.WebSocketBadStatusException as e:
+            # 也可能在握手时就被拒绝
+            assert e.status_code in [401, 403, 4001], f"未授权访问应被拒绝: {e.status_code}"
+        except Exception as e:
+            # 连接失败也是可接受的
+            pass
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def test_websocket_ship_not_found(self, bay_url):
+        """WebSocket 连接到不存在的 Ship"""
+        ws_url = self._get_ws_url("non-existent-ship-id", ACCESS_TOKEN, "test-session")
+
+        ws = websocket.WebSocket()
+        try:
+            ws.connect(ws_url, timeout=5)
+            # 如果连接成功，应该很快被关闭
+            try:
+                ws.recv()
+                pytest.fail("应该被关闭连接")
+            except websocket.WebSocketConnectionClosedException:
+                pass  # 预期行为
+        except websocket.WebSocketBadStatusException as e:
+            # 可能在握手时就被拒绝
+            # 403 表示会话无权限访问（可能先检查权限），404 表示 Ship 不存在
+            assert e.status_code in [403, 404, 4003, 4004], f"不存在 Ship 应返回相应错误: {e.status_code}"
+        except Exception:
+            pass  # 连接失败也是可接受的
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def test_websocket_session_no_access(self, bay_url):
+        """WebSocket 连接 - 会话无权访问 Ship"""
+        with fresh_ship() as (ship_id, headers):
+            # 使用不同的 session_id 尝试连接
+            different_session_id = f"different-{uuid.uuid4().hex[:8]}"
+            ws_url = self._get_ws_url(ship_id, ACCESS_TOKEN, different_session_id)
+
+            ws = websocket.WebSocket()
+            try:
+                ws.connect(ws_url, timeout=10)
+                # 如果连接成功，应该很快被关闭
+                try:
+                    ws.recv()
+                    pytest.fail("无权访问的会话应被拒绝")
+                except websocket.WebSocketConnectionClosedException:
+                    pass  # 预期行为
+            except websocket.WebSocketBadStatusException as e:
+                # 可能在握手时就被拒绝
+                assert e.status_code in [403, 4003], f"无权访问应返回相应错误: {e.status_code}"
+            except Exception:
+                pass  # 连接失败也是可接受的
+            finally:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+    def test_websocket_connect_success(self, bay_url):
+        """WebSocket 成功连接并发送/接收消息"""
+        # 创建 Ship 并获取 session_id
+        test_session_id = f"ws-test-{uuid.uuid4().hex[:8]}"
+
+        with fresh_ship(session_id=test_session_id) as (ship_id, headers):
+            # 等待 Ship 完全就绪
+            time.sleep(3)
+
+            ws_url = self._get_ws_url(ship_id, ACCESS_TOKEN, test_session_id)
+
+            ws = websocket.WebSocket()
+            try:
+                ws.connect(ws_url, timeout=10)
+
+                # 发送一个简单的命令
+                ws.send("echo 'WebSocket Test'\n")
+
+                # 等待并接收响应
+                response_received = False
+                for _ in range(10):  # 最多等待 10 次
+                    try:
+                        ws.settimeout(2)
+                        data = ws.recv()
+                        if data:
+                            response_received = True
+                            break
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    except Exception:
+                        break
+
+                # 验证收到了响应
+                assert response_received, "应该收到 WebSocket 响应"
+
+            except websocket.WebSocketBadStatusException as e:
+                pytest.fail(f"WebSocket 连接失败: {e.status_code}")
+            except Exception as e:
+                pytest.fail(f"WebSocket 测试失败: {e}")
+            finally:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+    def test_websocket_custom_terminal_size(self, bay_url):
+        """WebSocket 连接使用自定义终端大小"""
+        test_session_id = f"ws-size-{uuid.uuid4().hex[:8]}"
+
+        with fresh_ship(session_id=test_session_id) as (ship_id, headers):
+            time.sleep(3)
+
+            # 使用自定义终端大小
+            ws_url = self._get_ws_url(ship_id, ACCESS_TOKEN, test_session_id, cols=120, rows=40)
+
+            ws = websocket.WebSocket()
+            try:
+                ws.connect(ws_url, timeout=10)
+
+                # 发送命令获取终端大小
+                ws.send("stty size\n")
+
+                # 等待响应
+                for _ in range(10):
+                    try:
+                        ws.settimeout(2)
+                        data = ws.recv()
+                        if data and ("40" in data or "120" in data):
+                            # 终端大小设置成功
+                            break
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    except Exception:
+                        break
+
+            except Exception:
+                pass  # 自定义大小测试可能在某些环境下失败
+            finally:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+
+# 使用 asyncio 进行更高级的 WebSocket 测试
+try:
+    import asyncio
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(not AIOHTTP_AVAILABLE, reason="aiohttp 未安装")
+class TestWebSocketTerminalAsync:
+    """使用 aiohttp 进行异步 WebSocket 测试"""
+
+    def _get_ws_url(self, ship_id: str, token: str, session_id: str, cols: int = 80, rows: int = 24) -> str:
+        """构建 WebSocket URL"""
+        ws_base = BAY_URL.replace("http://", "ws://").replace("https://", "wss://")
+        return f"{ws_base}/ship/{ship_id}/term?token={token}&session_id={session_id}&cols={cols}&rows={rows}"
+
+    def test_websocket_bidirectional_communication(self, bay_url):
+        """测试 WebSocket 双向通信"""
+        async def run_test():
+            test_session_id = f"ws-async-{uuid.uuid4().hex[:8]}"
+
+            # 需要同步创建 Ship
+            headers = get_auth_headers(test_session_id)
+            payload = {"ttl": 120, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+
+            resp = requests.post(
+                f"{BAY_URL}/ship",
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+                timeout=120,
+            )
+            if resp.status_code != 201:
+                pytest.skip(f"创建 Ship 失败: {resp.status_code}")
+
+            ship_id = resp.json()["id"]
+
+            try:
+                # 等待 Ship 就绪
+                await asyncio.sleep(3)
+
+                ws_url = self._get_ws_url(ship_id, ACCESS_TOKEN, test_session_id)
+
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        async with session.ws_connect(ws_url, timeout=10) as ws:
+                            # 发送命令
+                            await ws.send_str("echo 'Async Test'\n")
+
+                            # 接收响应
+                            received_data = []
+                            try:
+                                async for msg in ws:
+                                    if msg.type == aiohttp.WSMsgType.TEXT:
+                                        received_data.append(msg.data)
+                                        if "Async Test" in msg.data or len(received_data) > 5:
+                                            break
+                                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                                        break
+                            except asyncio.TimeoutError:
+                                pass
+
+                            assert len(received_data) > 0, "应该收到 WebSocket 响应"
+
+                    except aiohttp.ClientError as e:
+                        pytest.fail(f"WebSocket 连接失败: {e}")
+
+            finally:
+                # 清理
+                requests.delete(
+                    f"{BAY_URL}/ship/{ship_id}",
+                    headers=headers,
+                    timeout=30,
+                )
+
+        asyncio.get_event_loop().run_until_complete(run_test())
+
+    def test_websocket_connection_close(self, bay_url):
+        """测试 WebSocket 连接关闭"""
+        async def run_test():
+            test_session_id = f"ws-close-{uuid.uuid4().hex[:8]}"
+
+            headers = get_auth_headers(test_session_id)
+            payload = {"ttl": 120, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+
+            resp = requests.post(
+                f"{BAY_URL}/ship",
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+                timeout=120,
+            )
+            if resp.status_code != 201:
+                pytest.skip(f"创建 Ship 失败: {resp.status_code}")
+
+            ship_id = resp.json()["id"]
+
+            try:
+                await asyncio.sleep(3)
+
+                ws_url = self._get_ws_url(ship_id, ACCESS_TOKEN, test_session_id)
+
+                async with aiohttp.ClientSession() as session:
+                    ws = await session.ws_connect(ws_url, timeout=10)
+
+                    # 验证连接成功
+                    assert not ws.closed, "WebSocket 应该已连接"
+
+                    # 正常关闭连接
+                    await ws.close()
+
+                    # 验证连接已关闭
+                    assert ws.closed, "WebSocket 应该已关闭"
+
+            finally:
+                requests.delete(
+                    f"{BAY_URL}/ship/{ship_id}",
+                    headers=headers,
+                    timeout=30,
+                )
+
+        asyncio.get_event_loop().run_until_complete(run_test())

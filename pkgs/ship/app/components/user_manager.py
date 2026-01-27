@@ -16,7 +16,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -436,6 +436,81 @@ cd ~/workspace
         except Exception as e:
             logger.error(f"Failed to restore users: {e}")
             return 0
+
+    @staticmethod
+    async def start_interactive_shell(
+        session_id: str,
+        cols: int = 80,
+        rows: int = 24,
+        env: Optional[Dict[str, str]] = None,
+    ) -> Tuple[int, int]:
+        """
+        启动交互式 shell (PTY)
+
+        Returns:
+            (master_fd, pid)
+        """
+        try:
+            import pty
+            import tty
+
+            username = await get_or_create_session_user(session_id)
+            user_info = await UserManager.get_user_info(username)
+            user_home = user_info["home_dir"]
+            working_dir = Path(user_home) / "workspace"
+
+            # 准备环境变量
+            process_env = {
+                "HOME": user_home,
+                "USER": username,
+                "LOGNAME": username,
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "SHELL": "/bin/bash",
+                "TERM": "xterm-256color",
+                "LANG": "en_US.UTF-8",
+            }
+            if env:
+                process_env.update(env)
+
+            pid, master_fd = pty.fork()
+
+            if pid == 0:  # Child process
+                try:
+                    # 设置工作目录
+                    os.chdir(str(working_dir))
+
+                    # 准备 sudo 命令参数
+                    sudo_cmd = "/usr/bin/sudo"
+                    sudo_args = [
+                        sudo_cmd,
+                        "-u",
+                        username,
+                        "-H",
+                        "bash",  # 显式运行 bash
+                        "-l",  # login shell
+                    ]
+
+                    os.execvpe(sudo_cmd, sudo_args, process_env)
+
+                except Exception as e:
+                    print(f"Error starting shell: {e}")
+                    os._exit(1)
+
+            # Parent process
+            # 设置窗口大小
+            import termios
+            import struct
+            import fcntl
+
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+
+            logger.info(f"Started interactive shell for {username} (PID {pid})")
+            return master_fd, pid
+
+        except Exception as e:
+            logger.error(f"Failed to start interactive shell for {session_id}: {e}")
+            raise
 
     @staticmethod
     async def cleanup_session_user(session_id: str) -> bool:

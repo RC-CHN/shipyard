@@ -48,6 +48,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     git \
+    # 常用文本编辑器和工具（方便终端直连调试）
+    vim-tiny \
+    nano \
+    less \
+    procps \
+    htop \
     && rm -rf /var/lib/apt/lists/*
 
 # 从builder阶段复制Python包

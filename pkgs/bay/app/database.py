@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from sqlalchemy.pool import StaticPool
 from typing import Optional, List
 from app.config import settings
-from app.models import Ship, SessionShip
+from app.models import Ship, SessionShip, ShipStatus
 from datetime import datetime, timezone
 
 
@@ -63,10 +63,12 @@ class DatabaseService:
         ship.updated_at = datetime.now(timezone.utc)
         session = self.get_session()
         try:
-            session.add(ship)
+            # Use merge() instead of add() to handle detached objects
+            # merge() copies the state of the given instance into a persistent instance
+            merged_ship = await session.merge(ship)
             await session.commit()
-            await session.refresh(ship)
-            return ship
+            await session.refresh(merged_ship)
+            return merged_ship
         finally:
             await session.close()
 
@@ -87,10 +89,23 @@ class DatabaseService:
             await session.close()
 
     async def list_active_ships(self) -> List[Ship]:
-        """List all active ships"""
+        """List all active ships (running and creating)"""
         session = self.get_session()
         try:
-            statement = select(Ship).where(Ship.status == 1)
+            # Include both RUNNING and CREATING status ships
+            statement = select(Ship).where(
+                (Ship.status == ShipStatus.RUNNING) | (Ship.status == ShipStatus.CREATING)
+            )
+            result = await session.execute(statement)
+            return list(result.scalars().all())
+        finally:
+            await session.close()
+
+    async def list_all_ships(self) -> List[Ship]:
+        """List all ships (including stopped)"""
+        session = self.get_session()
+        try:
+            statement = select(Ship).order_by(Ship.created_at.desc())
             result = await session.execute(statement)
             return list(result.scalars().all())
         finally:
@@ -163,10 +178,11 @@ class DatabaseService:
         """Update session-ship relationship"""
         session = self.get_session()
         try:
-            session.add(session_ship)
+            # Use merge() instead of add() to handle detached objects
+            merged_session_ship = await session.merge(session_ship)
             await session.commit()
-            await session.refresh(session_ship)
-            return session_ship
+            await session.refresh(merged_session_ship)
+            return merged_session_ship
         finally:
             await session.close()
 
@@ -174,9 +190,9 @@ class DatabaseService:
         """Find an available ship that can accept a new session"""
         session = self.get_session()
         try:
-            # Find ships that have available session slots
+            # Find ships that have available session slots (only RUNNING ships)
             statement = select(Ship).where(
-                Ship.status == 1, Ship.current_session_num < Ship.max_session_num
+                Ship.status == ShipStatus.RUNNING, Ship.current_session_num < Ship.max_session_num
             )
             result = await session.execute(statement)
             ships = list(result.scalars().all())
@@ -193,38 +209,50 @@ class DatabaseService:
             await session.close()
 
     async def find_active_ship_for_session(self, session_id: str) -> Optional[Ship]:
-        """Find an active running ship that this session has access to"""
+        """Find an active running ship that this session has access to.
+        
+        If the session has access to multiple running ships, returns the most recently updated one.
+        """
         session = self.get_session()
         try:
-            # Find active ships that this session has access to
+            # Find RUNNING ships that this session has access to
+            # Order by updated_at desc to get the most recently used one
             statement = (
                 select(Ship)
                 .join(SessionShip, Ship.id == SessionShip.ship_id)
                 .where(
                     SessionShip.session_id == session_id,
-                    Ship.status == 1,
+                    Ship.status == ShipStatus.RUNNING,
                 )
+                .order_by(Ship.updated_at.desc())
             )
             result = await session.execute(statement)
-            return result.scalar_one_or_none()
+            # Use scalars().first() instead of scalar_one_or_none() to handle multiple results
+            return result.scalars().first()
         finally:
             await session.close()
 
     async def find_stopped_ship_for_session(self, session_id: str) -> Optional[Ship]:
-        """Find a stopped ship that belongs to this session"""
+        """Find a stopped ship that belongs to this session.
+        
+        If the session has access to multiple stopped ships, returns the most recently updated one.
+        """
         session = self.get_session()
         try:
-            # Find stopped ships that this session has access to
+            # Find STOPPED ships that this session has access to
+            # Order by updated_at desc to get the most recently stopped one
             statement = (
                 select(Ship)
                 .join(SessionShip, Ship.id == SessionShip.ship_id)
                 .where(
                     SessionShip.session_id == session_id,
-                    Ship.status == 0,
+                    Ship.status == ShipStatus.STOPPED,
                 )
+                .order_by(Ship.updated_at.desc())
             )
             result = await session.execute(statement)
-            return result.scalar_one_or_none()
+            # Use scalars().first() instead of scalar_one_or_none() to handle multiple results
+            return result.scalars().first()
         finally:
             await session.close()
 
@@ -263,6 +291,89 @@ class DatabaseService:
                 await session.refresh(ship)
 
             return ship
+        finally:
+            await session.close()
+
+    async def delete_sessions_for_ship(self, ship_id: str) -> List[str]:
+        """Delete all session-ship relationships for a ship and return deleted session IDs"""
+        session = self.get_session()
+        try:
+            # First, get all session IDs for this ship
+            statement = select(SessionShip).where(SessionShip.ship_id == ship_id)
+            result = await session.execute(statement)
+            session_ships = list(result.scalars().all())
+            
+            deleted_session_ids = [ss.session_id for ss in session_ships]
+            
+            # Delete all session-ship relationships
+            for ss in session_ships:
+                await session.delete(ss)
+            
+            await session.commit()
+            return deleted_session_ids
+        finally:
+            await session.close()
+
+    async def extend_session_ttl(
+        self, session_id: str, ttl: int
+    ) -> Optional[SessionShip]:
+        """Extend the TTL for a session by updating expires_at"""
+        from datetime import timedelta
+        
+        session = self.get_session()
+        try:
+            statement = select(SessionShip).where(SessionShip.session_id == session_id)
+            result = await session.execute(statement)
+            session_ship = result.scalar_one_or_none()
+
+            if session_ship:
+                now = datetime.now(timezone.utc)
+                session_ship.expires_at = now + timedelta(seconds=ttl)
+                session_ship.last_activity = now
+                session.add(session_ship)
+                await session.commit()
+                await session.refresh(session_ship)
+
+            return session_ship
+        finally:
+            await session.close()
+
+    async def expire_sessions_for_ship(self, ship_id: str) -> int:
+        """Mark all sessions for a ship as expired by setting expires_at to current time.
+        
+        This is called when a ship is stopped to ensure session status
+        reflects the actual container state.
+        
+        Args:
+            ship_id: The ship ID
+            
+        Returns:
+            Number of sessions updated
+        """
+        session = self.get_session()
+        try:
+            statement = select(SessionShip).where(SessionShip.ship_id == ship_id)
+            result = await session.execute(statement)
+            session_ships = list(result.scalars().all())
+            
+            now = datetime.now(timezone.utc)
+            updated_count = 0
+            
+            for ss in session_ships:
+                # Only update if session is still active (expires_at > now)
+                expires_at = ss.expires_at
+                if expires_at is not None:
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    if expires_at > now:
+                        ss.expires_at = now
+                        session.add(ss)
+                        updated_count += 1
+            
+            if updated_count > 0:
+                await session.commit()
+            
+            return updated_count
         finally:
             await session.close()
 

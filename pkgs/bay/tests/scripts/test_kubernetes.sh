@@ -214,8 +214,12 @@ run_tests() {
     
     # 运行测试脚本
     echo ""
-    echo "  运行 pytest tests/e2e/..."
+    echo "  运行 pytest tests/unit/..."
     cd "$PROJECT_ROOT"
+    python -m pytest tests/unit/ -v || true
+    
+    echo ""
+    echo "  运行 pytest tests/e2e/..."
     python -m pytest tests/e2e/ -v || true
     
     # 清理端口转发
@@ -301,6 +305,7 @@ main() {
             wait_for_bay
             show_status
             run_tests
+            cleanup
             ;;
         build)
             check_prerequisites

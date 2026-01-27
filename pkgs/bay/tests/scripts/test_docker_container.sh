@@ -39,6 +39,9 @@ for i in {1..30}; do
   fi
 done
 
+echo "==> [Docker Container] 运行单元测试"
+uv run python -m pytest tests/unit/ -v
+
 echo "==> [Docker Container] 运行 E2E 测试"
 uv run python -m pytest tests/e2e/ -v
 
