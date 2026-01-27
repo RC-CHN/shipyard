@@ -751,3 +751,102 @@ async with Sandbox() as sandbox:
 
 3. **LearnAct** (2024) - "LearnAct: Few-Shot Mobile App Testing"
    - 从执行历史中学习可复用技能
+
+---
+
+## MCP HTTP 模式多客户端 Session 隔离
+
+### 问题背景
+
+当 MCP Server 以 HTTP 模式（`--transport http`）部署时，多个客户端连接到同一个服务器进程。原有实现使用 `lifespan` 创建单一 Sandbox，导致所有客户端共享同一个 Session，存在：
+
+1. **状态污染**: 不同客户端共享 Python 变量、文件系统
+2. **安全风险**: 一个客户端可以访问/修改另一个客户端的数据
+3. **资源冲突**: 包安装、文件操作相互影响
+
+### 解决方案
+
+使用 FastMCP 原生的 per-session state 机制实现客户端隔离：
+
+**架构变更：**
+```
+# 旧架构（所有客户端共享）
+lifespan 启动 → Sandbox (session-123, ship-456)
+                ↑
+客户端 A ──────┘
+客户端 B ──────┘
+
+# 新架构（每客户端独立）
+lifespan → GlobalConfig (endpoint, token)
+
+客户端 A (mcp-session-aaa) → ctx.get_state → Sandbox A (ship-111)
+客户端 B (mcp-session-bbb) → ctx.get_state → Sandbox B (ship-222)
+```
+
+**核心实现：**
+```python
+@dataclass
+class GlobalConfig:
+    """全局配置，在 lifespan 中初始化"""
+    endpoint: str
+    token: str
+    default_ttl: int = 1800  # 30 分钟
+
+@asynccontextmanager
+async def mcp_lifespan(server: FastMCP) -> AsyncIterator[GlobalConfig]:
+    # 只存储配置，不创建 Sandbox
+    yield GlobalConfig(endpoint=endpoint, token=token)
+
+async def get_or_create_sandbox(ctx: Context) -> Sandbox:
+    """获取或创建当前 MCP session 的 Sandbox"""
+    sandbox = await ctx.get_state("sandbox")
+
+    if sandbox is None:
+        config = ctx.request_context.lifespan_context
+        sandbox = Sandbox(
+            endpoint=config.endpoint,
+            token=config.token,
+            session_id=ctx.session_id,  # 使用 MCP session ID
+            ttl=config.default_ttl,
+        )
+        await sandbox.start()
+        await ctx.set_state("sandbox", sandbox)
+    else:
+        # 续期 TTL
+        await sandbox.extend_ttl(config.default_ttl)
+
+    return sandbox
+```
+
+### Session 清理机制
+
+- **TTL 自动续期**: 每次 tool 调用时自动续期（每 10 分钟）
+- **过期自动清理**: 如果客户端断开且 TTL 到期，Bay 自动清理 Ship
+- **失效重建**: 如果 Sandbox 已过期，自动创建新的
+
+### 配置
+
+新增环境变量：
+- `SHIPYARD_SANDBOX_TTL`: Sandbox TTL 秒数（默认 1800，即 30 分钟）
+
+### 兼容性
+
+- **stdio 模式**: 无影响（一个进程 = 一个 session = 一个 Sandbox）
+- **HTTP 模式**: 每个 MCP 客户端获得独立的 Sandbox
+- **现有配置**: 无需修改
+
+### 验证
+
+HTTP 模式隔离测试：
+```python
+async def test_http_mode_isolation():
+    """测试 HTTP 模式下多客户端隔离"""
+    async with aiohttp.ClientSession() as client_a:
+        async with aiohttp.ClientSession() as client_b:
+            # A 设置变量
+            await call_tool(client_a, "execute_python", {"code": "x = 123"})
+
+            # B 看不到 A 的变量
+            result = await call_tool(client_b, "execute_python", {"code": "print(x)"})
+            assert "NameError" in result
+```

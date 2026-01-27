@@ -11,6 +11,10 @@ Supported transports:
 - stdio (default): For local integration with desktop apps
 - streamable-http: For remote/hosted deployments
 
+In HTTP mode, each MCP client session gets its own isolated Sandbox.
+Session state (including the Sandbox) persists across tool calls within
+the same MCP session and is automatically cleaned up when the session ends.
+
 Usage:
     # stdio mode (default)
     python -m app.mcp.run
@@ -21,13 +25,16 @@ Usage:
 Environment variables:
     SHIPYARD_ENDPOINT: Bay API URL (default: http://localhost:8156)
     SHIPYARD_TOKEN: Access token for Bay API authentication (required)
+    SHIPYARD_SANDBOX_TTL: Sandbox TTL in seconds (default: 1800)
 """
 
+import asyncio
 import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 # Add SDK to path if running standalone
@@ -41,16 +48,28 @@ from mcp.server.fastmcp import Context, FastMCP
 
 
 @dataclass
-class MCPContext:
-    """MCP Server context holding the sandbox instance."""
-    sandbox: Sandbox
+class GlobalConfig:
+    """Global configuration initialized during server lifespan.
+
+    This contains configuration that is shared across all sessions.
+    Per-session state (like Sandbox) is stored via ctx.set_state().
+    """
+    endpoint: str
+    token: str
+    default_ttl: int = 1800  # 30 minutes
+    ttl_renew_threshold: int = 600  # Renew when < 10 minutes remaining
 
 
 @asynccontextmanager
-async def mcp_lifespan(server: FastMCP) -> AsyncIterator[MCPContext]:
-    """Manage MCP server lifecycle with sandbox."""
+async def mcp_lifespan(server: FastMCP) -> AsyncIterator[GlobalConfig]:
+    """Manage MCP server lifecycle.
+
+    Only initializes global configuration here. Per-session Sandbox
+    instances are created lazily via get_or_create_sandbox().
+    """
     endpoint = os.getenv("SHIPYARD_ENDPOINT", "http://localhost:8156")
     token = os.getenv("SHIPYARD_TOKEN", "")
+    ttl = int(os.getenv("SHIPYARD_SANDBOX_TTL", "1800"))
 
     if not token:
         raise ValueError(
@@ -58,14 +77,7 @@ async def mcp_lifespan(server: FastMCP) -> AsyncIterator[MCPContext]:
             "Set it to your Bay API access token."
         )
 
-    # Create and start sandbox
-    sandbox = Sandbox(endpoint=endpoint, token=token)
-    await sandbox.start()
-
-    try:
-        yield MCPContext(sandbox=sandbox)
-    finally:
-        await sandbox.stop()
+    yield GlobalConfig(endpoint=endpoint, token=token, default_ttl=ttl)
 
 
 # Create MCP server
@@ -75,10 +87,76 @@ mcp = FastMCP(
     lifespan=mcp_lifespan,
 )
 
+# Lock for preventing race conditions during sandbox creation
+_sandbox_locks: dict[str, asyncio.Lock] = {}
 
-def _get_sandbox(ctx: Context) -> Sandbox:
-    """Get sandbox from context."""
-    return ctx.request_context.lifespan_context.sandbox
+
+async def get_or_create_sandbox(ctx: Context) -> Sandbox:
+    """Get or create a Sandbox for the current MCP session.
+
+    This function manages per-session Sandbox instances:
+    - First call in a session creates a new Sandbox
+    - Subsequent calls return the existing Sandbox
+    - TTL is automatically renewed to keep the Sandbox alive
+
+    The Sandbox is stored in session state (ctx.set_state) which is
+    automatically isolated per MCP session by FastMCP.
+
+    Args:
+        ctx: MCP request context
+
+    Returns:
+        Sandbox instance for this session
+    """
+    session_id = ctx.session_id
+
+    # Get or create lock for this session
+    if session_id not in _sandbox_locks:
+        _sandbox_locks[session_id] = asyncio.Lock()
+
+    async with _sandbox_locks[session_id]:
+        sandbox = await ctx.get_state("sandbox")
+        last_renew = await ctx.get_state("last_ttl_renew")
+        config: GlobalConfig = ctx.request_context.lifespan_context
+
+        if sandbox is None:
+            # First call in this session - create new Sandbox
+            sandbox = Sandbox(
+                endpoint=config.endpoint,
+                token=config.token,
+                ttl=config.default_ttl,
+                session_id=session_id,  # Use MCP session ID
+            )
+            try:
+                await sandbox.start()
+            except Exception as e:
+                raise RuntimeError(f"Failed to create sandbox: {e}")
+
+            await ctx.set_state("sandbox", sandbox)
+            await ctx.set_state("last_ttl_renew", datetime.now())
+            await ctx.info(f"Created new sandbox for session {session_id[:8]}...")
+        else:
+            # Existing sandbox - check if TTL renewal is needed
+            now = datetime.now()
+            if last_renew is None or (now - last_renew).total_seconds() > config.ttl_renew_threshold:
+                # Renew TTL
+                try:
+                    await sandbox.extend_ttl(config.default_ttl)
+                    await ctx.set_state("last_ttl_renew", now)
+                except Exception:
+                    # If renewal fails, sandbox may have expired - recreate
+                    sandbox = Sandbox(
+                        endpoint=config.endpoint,
+                        token=config.token,
+                        ttl=config.default_ttl,
+                        session_id=session_id,
+                    )
+                    await sandbox.start()
+                    await ctx.set_state("sandbox", sandbox)
+                    await ctx.set_state("last_ttl_renew", now)
+                    await ctx.warning(f"Sandbox expired, created new one for session {session_id[:8]}...")
+
+        return sandbox
 
 
 def _format_exec_result(result: ExecResult) -> str:
@@ -123,7 +201,7 @@ async def execute_python(
     Returns:
         Execution result including stdout, stderr, and any return value
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     result = await sandbox.python.exec(code, timeout=timeout)
     return _format_exec_result(result)
 
@@ -148,7 +226,7 @@ async def execute_shell(
     Returns:
         Command output including stdout and stderr
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     result = await sandbox.shell.exec(command, cwd=cwd, timeout=timeout)
     return _format_exec_result(result)
 
@@ -166,7 +244,7 @@ async def read_file(
     Returns:
         File content as string
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     return await sandbox.fs.read(path)
 
 
@@ -188,7 +266,7 @@ async def write_file(
     Returns:
         Confirmation message
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     await sandbox.fs.write(path, content)
     return f"File written: {path}"
 
@@ -206,7 +284,7 @@ async def list_files(
     Returns:
         List of files and directories
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     entries = await sandbox.fs.list(path)
 
     if not entries:
@@ -237,7 +315,7 @@ async def install_package(
     Returns:
         Installation result
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     result = await sandbox.shell.exec(f"pip install {package}", timeout=120)
 
     if result.success:
@@ -252,7 +330,7 @@ async def get_sandbox_info(ctx: Context = None) -> str:
     Returns:
         Sandbox information including session ID, ship ID, etc.
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     return f"Session ID: {sandbox.session_id}\nShip ID: {sandbox.ship_id}"
 
 
@@ -275,7 +353,7 @@ async def get_execution_history(
     Returns:
         Execution history entries
     """
-    sandbox = _get_sandbox(ctx)
+    sandbox = await get_or_create_sandbox(ctx)
     history = await sandbox.get_execution_history(
         exec_type=exec_type,
         success_only=success_only,
