@@ -267,29 +267,6 @@ async def get_execution_history(
     )
 
 
-@router.get("/sessions/{session_id}/history/{execution_id}", response_model=ExecutionHistoryEntry)
-async def get_execution_by_id(
-    session_id: str,
-    execution_id: str,
-    token: str = Depends(verify_token),
-):
-    """Get a specific execution record by ID.
-
-    Args:
-        session_id: The session ID
-        execution_id: The execution history ID
-    """
-    entry = await db_service.get_execution_by_id(session_id, execution_id)
-
-    if not entry:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Execution not found"
-        )
-
-    return ExecutionHistoryEntry.model_validate(entry)
-
-
 @router.get("/sessions/{session_id}/history/last", response_model=ExecutionHistoryEntry)
 async def get_last_execution(
     session_id: str,
@@ -308,6 +285,29 @@ async def get_last_execution(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No execution history found"
+        )
+
+    return ExecutionHistoryEntry.model_validate(entry)
+
+
+@router.get("/sessions/{session_id}/history/{execution_id}", response_model=ExecutionHistoryEntry)
+async def get_execution_by_id(
+    session_id: str,
+    execution_id: str,
+    token: str = Depends(verify_token),
+):
+    """Get a specific execution record by ID.
+
+    Args:
+        session_id: The session ID
+        execution_id: The execution history ID
+    """
+    entry = await db_service.get_execution_by_id(session_id, execution_id)
+
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Execution not found"
         )
 
     return ExecutionHistoryEntry.model_validate(entry)
