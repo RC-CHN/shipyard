@@ -1,366 +1,437 @@
 """
-Shipyard MCP Server Adapter
+Shipyard MCP Server
 
-This module provides an MCP (Model Context Protocol) server that allows
-MCP-compatible clients (Claude Desktop, Cursor, etc.) to interact with
-Shipyard sandboxes.
+This module provides an MCP server that allows MCP-compatible clients
+(Claude Desktop, ChatGPT Desktop, Cursor, VS Code, etc.) to interact
+with Shipyard sandboxes.
 
-Transport: stdio (standard input/output)
+Supported transports:
+- stdio (default): For local integration with desktop apps
+- streamable-http: For remote/hosted deployments
+
+Usage:
+    # stdio mode (default)
+    python -m app.mcp.run
+
+    # HTTP mode
+    python -m app.mcp.run --transport http --port 8000
+
+Environment variables:
+    SHIPYARD_ENDPOINT: Bay API URL (default: http://localhost:8156)
+    SHIPYARD_TOKEN: Access token for Bay API authentication
 """
 
-import asyncio
-import json
-import sys
+import os
 import uuid
-import logging
-from typing import Any, Optional
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Optional
 
 import aiohttp
 
-logger = logging.getLogger(__name__)
+from mcp.server.fastmcp import Context, FastMCP
 
 
-class ShipyardMCPServer:
-    """MCP Server that bridges MCP clients to Shipyard Bay."""
+@dataclass
+class ShipyardContext:
+    """Application context with shared resources."""
 
-    def __init__(self, bay_url: str, access_token: str):
-        """
-        Initialize the MCP Server.
+    http_session: aiohttp.ClientSession
+    bay_url: str
+    access_token: str
+    ship_id: Optional[str] = None
+    session_id: str = ""
 
-        Args:
-            bay_url: URL of the Shipyard Bay API
-            access_token: Access token for Bay API authentication
-        """
-        self.bay_url = bay_url.rstrip("/")
-        self.access_token = access_token
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._ship_id: Optional[str] = None
-        self._session_id: str = str(uuid.uuid4())
+    def __post_init__(self):
+        if not self.session_id:
+            self.session_id = str(uuid.uuid4())
 
-    async def _get_http_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session."""
-        if self._session is None or self._session.closed:
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-            self._session = aiohttp.ClientSession(headers=headers)
-        return self._session
 
-    async def _ensure_ship(self) -> str:
-        """Ensure we have an active ship, create one if needed."""
-        if self._ship_id:
-            # Check if ship is still running
-            session = await self._get_http_session()
-            async with session.get(f"{self.bay_url}/ship/{self._ship_id}") as resp:
-                if resp.status == 200:
-                    ship_data = await resp.json()
-                    if ship_data.get("status") == 1:  # RUNNING
-                        return self._ship_id
+@asynccontextmanager
+async def shipyard_lifespan(server: FastMCP) -> AsyncIterator[ShipyardContext]:
+    """Manage application lifecycle with type-safe context."""
+    bay_url = os.getenv("SHIPYARD_ENDPOINT", "http://localhost:8156").rstrip("/")
+    access_token = os.getenv("SHIPYARD_TOKEN", "")
 
-        # Create new ship
-        session = await self._get_http_session()
-        payload = {"ttl": 3600}
-        headers = {"X-SESSION-ID": self._session_id}
+    if not access_token:
+        raise ValueError(
+            "SHIPYARD_TOKEN environment variable is required. "
+            "Set it to your Bay API access token."
+        )
 
-        async with session.post(
-            f"{self.bay_url}/ship", json=payload, headers=headers
-        ) as resp:
-            if resp.status == 201:
-                ship_data = await resp.json()
-                self._ship_id = ship_data["id"]
-                logger.info(f"Created ship {self._ship_id} for MCP session")
-                return self._ship_id
-            else:
-                error = await resp.text()
-                raise Exception(f"Failed to create ship: {error}")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    http_session = aiohttp.ClientSession(headers=headers)
 
-    async def _exec_operation(
-        self, operation_type: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Execute an operation on the ship."""
-        ship_id = await self._ensure_ship()
-        session = await self._get_http_session()
+    try:
+        yield ShipyardContext(
+            http_session=http_session,
+            bay_url=bay_url,
+            access_token=access_token,
+        )
+    finally:
+        await http_session.close()
 
-        request_payload = {"type": operation_type, "payload": payload}
-        headers = {"X-SESSION-ID": self._session_id}
 
-        async with session.post(
-            f"{self.bay_url}/ship/{ship_id}/exec",
-            json=request_payload,
-            headers=headers,
+# Create MCP server with lifespan management
+mcp = FastMCP(
+    "Shipyard",
+    version="1.0.0",
+    lifespan=shipyard_lifespan,
+)
+
+
+async def _ensure_ship(ctx: ShipyardContext, ttl: int = 3600) -> str:
+    """Ensure we have an active ship, create one if needed."""
+    if ctx.ship_id:
+        # Check if ship is still running
+        async with ctx.http_session.get(
+            f"{ctx.bay_url}/ship/{ctx.ship_id}"
         ) as resp:
             if resp.status == 200:
-                return await resp.json()
-            else:
-                error = await resp.text()
-                raise Exception(f"Execution failed: {error}")
+                ship_data = await resp.json()
+                if ship_data.get("status") == 1:  # RUNNING
+                    return ctx.ship_id
 
-    # Tool implementations
-    async def execute_python(self, code: str, timeout: int = 30) -> dict[str, Any]:
-        """Execute Python code in the sandbox."""
-        result = await self._exec_operation(
-            "ipython/exec",
-            {"code": code, "timeout": timeout},
-        )
-        return result.get("data", result)
+    # Create new ship
+    payload = {"ttl": ttl}
+    headers = {"X-SESSION-ID": ctx.session_id}
 
-    async def execute_shell(
-        self, command: str, cwd: Optional[str] = None, timeout: int = 30
-    ) -> dict[str, Any]:
-        """Execute shell command in the sandbox."""
-        payload: dict[str, Any] = {"command": command, "timeout": timeout}
-        if cwd:
-            payload["cwd"] = cwd
-
-        result = await self._exec_operation("shell/exec", payload)
-        return result.get("data", result)
-
-    async def read_file(self, path: str) -> dict[str, Any]:
-        """Read file content from the sandbox."""
-        result = await self._exec_operation(
-            "fs/read_file",
-            {"path": path},
-        )
-        return result.get("data", result)
-
-    async def write_file(self, path: str, content: str) -> dict[str, Any]:
-        """Write content to a file in the sandbox."""
-        result = await self._exec_operation(
-            "fs/write_file",
-            {"path": path, "content": content},
-        )
-        return result.get("data", result)
-
-    def get_tools_definition(self) -> list[dict[str, Any]]:
-        """Return MCP tools definition."""
-        return [
-            {
-                "name": "execute_python",
-                "description": "Execute Python code in an isolated sandbox",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "code": {
-                            "type": "string",
-                            "description": "Python code to execute",
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Execution timeout in seconds",
-                            "default": 30,
-                        },
-                    },
-                    "required": ["code"],
-                },
-            },
-            {
-                "name": "execute_shell",
-                "description": "Execute shell command in an isolated sandbox",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to execute",
-                        },
-                        "cwd": {
-                            "type": "string",
-                            "description": "Working directory (relative to workspace)",
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Execution timeout in seconds",
-                            "default": 30,
-                        },
-                    },
-                    "required": ["command"],
-                },
-            },
-            {
-                "name": "read_file",
-                "description": "Read file content from the sandbox",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path (relative to workspace)",
-                        },
-                    },
-                    "required": ["path"],
-                },
-            },
-            {
-                "name": "write_file",
-                "description": "Write content to a file in the sandbox",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path (relative to workspace)",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Content to write",
-                        },
-                    },
-                    "required": ["path", "content"],
-                },
-            },
-        ]
-
-    async def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Handle an MCP JSON-RPC request."""
-        method = request.get("method")
-        params = request.get("params", {})
-        request_id = request.get("id")
-
-        try:
-            if method == "initialize":
-                result = {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {
-                        "tools": {},
-                    },
-                    "serverInfo": {
-                        "name": "shipyard",
-                        "version": "1.0.0",
-                    },
-                }
-            elif method == "tools/list":
-                result = {"tools": self.get_tools_definition()}
-            elif method == "tools/call":
-                tool_name = params.get("name")
-                arguments = params.get("arguments", {})
-                result = await self._call_tool(tool_name, arguments)
-            elif method == "notifications/initialized":
-                # This is a notification, no response needed
-                return None  # type: ignore
-            else:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {method}",
-                    },
-                }
-
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": result,
-            }
-        except Exception as e:
-            logger.exception(f"Error handling request: {e}")
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {
-                    "code": -32000,
-                    "message": str(e),
-                },
-            }
-
-    async def _call_tool(
-        self, tool_name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Call a tool and return the result."""
-        if tool_name == "execute_python":
-            result = await self.execute_python(
-                code=arguments["code"],
-                timeout=arguments.get("timeout", 30),
-            )
-        elif tool_name == "execute_shell":
-            result = await self.execute_shell(
-                command=arguments["command"],
-                cwd=arguments.get("cwd"),
-                timeout=arguments.get("timeout", 30),
-            )
-        elif tool_name == "read_file":
-            result = await self.read_file(path=arguments["path"])
-        elif tool_name == "write_file":
-            result = await self.write_file(
-                path=arguments["path"],
-                content=arguments["content"],
-            )
+    async with ctx.http_session.post(
+        f"{ctx.bay_url}/ship", json=payload, headers=headers
+    ) as resp:
+        if resp.status == 201:
+            ship_data = await resp.json()
+            ctx.ship_id = ship_data["id"]
+            return ctx.ship_id
         else:
-            raise ValueError(f"Unknown tool: {tool_name}")
-
-        # Format result as MCP content
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": json.dumps(result, indent=2),
-                }
-            ],
-            "isError": not result.get("success", True),
-        }
-
-    async def run_stdio(self):
-        """Run the MCP server using stdio transport."""
-        logger.info("Starting Shipyard MCP Server (stdio)")
-
-        # Read from stdin, write to stdout
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin)
-
-        while True:
-            try:
-                # Read line from stdin
-                line = await reader.readline()
-                if not line:
-                    break
-
-                line_str = line.decode("utf-8").strip()
-                if not line_str:
-                    continue
-
-                # Parse JSON-RPC request
-                request = json.loads(line_str)
-                logger.debug(f"Received: {request}")
-
-                # Handle request
-                response = await self.handle_request(request)
-
-                # Send response (if not a notification)
-                if response is not None:
-                    response_str = json.dumps(response) + "\n"
-                    sys.stdout.write(response_str)
-                    sys.stdout.flush()
-                    logger.debug(f"Sent: {response}")
-
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON: {e}")
-            except Exception as e:
-                logger.exception(f"Error processing request: {e}")
-
-    async def close(self):
-        """Clean up resources."""
-        if self._session and not self._session.closed:
-            await self._session.close()
+            error = await resp.text()
+            raise Exception(f"Failed to create ship: {error}")
 
 
-async def main():
-    """Main entry point for MCP server."""
-    import os
+async def _exec_operation(
+    ctx: ShipyardContext,
+    operation_type: str,
+    payload: dict,
+) -> dict:
+    """Execute an operation on the ship."""
+    ship_id = await _ensure_ship(ctx)
 
-    bay_url = os.getenv("SHIPYARD_ENDPOINT", "http://localhost:8156")
-    access_token = os.getenv("SHIPYARD_TOKEN", "secret-token")
+    request_payload = {"type": operation_type, "payload": payload}
+    headers = {"X-SESSION-ID": ctx.session_id}
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        stream=sys.stderr,  # Log to stderr to not interfere with stdio
+    async with ctx.http_session.post(
+        f"{ctx.bay_url}/ship/{ship_id}/exec",
+        json=request_payload,
+        headers=headers,
+    ) as resp:
+        if resp.status == 200:
+            return await resp.json()
+        else:
+            error = await resp.text()
+            raise Exception(f"Execution failed: {error}")
+
+
+def _get_ctx(ctx: Context) -> ShipyardContext:
+    """Get ShipyardContext from request context."""
+    return ctx.request_context.lifespan_context
+
+
+# =============================================================================
+# MCP Tools
+# =============================================================================
+
+
+@mcp.tool()
+async def execute_python(
+    code: str,
+    timeout: int = 30,
+    ctx: Context = None,
+) -> str:
+    """Execute Python code in an isolated sandbox.
+
+    The sandbox provides a full Python environment with common libraries
+    pre-installed. Code execution is isolated and secure.
+
+    Args:
+        code: Python code to execute
+        timeout: Execution timeout in seconds (default: 30)
+
+    Returns:
+        Execution result including stdout, stderr, and any return value
+    """
+    shipyard_ctx = _get_ctx(ctx)
+    result = await _exec_operation(
+        shipyard_ctx,
+        "ipython/exec",
+        {"code": code, "timeout": timeout},
+    )
+    data = result.get("data", result)
+
+    # Format output for LLM consumption
+    output_parts = []
+    if data.get("stdout"):
+        output_parts.append(f"Output:\n{data['stdout']}")
+    if data.get("stderr"):
+        output_parts.append(f"Errors:\n{data['stderr']}")
+    if data.get("result"):
+        output_parts.append(f"Result: {data['result']}")
+
+    if not output_parts:
+        return "Code executed successfully (no output)"
+
+    return "\n\n".join(output_parts)
+
+
+@mcp.tool()
+async def execute_shell(
+    command: str,
+    cwd: str = None,
+    timeout: int = 30,
+    ctx: Context = None,
+) -> str:
+    """Execute a shell command in an isolated sandbox.
+
+    The sandbox provides a Linux environment with common tools available.
+    Command execution is isolated and secure.
+
+    Args:
+        command: Shell command to execute
+        cwd: Working directory (relative to workspace, optional)
+        timeout: Execution timeout in seconds (default: 30)
+
+    Returns:
+        Command output including stdout and stderr
+    """
+    shipyard_ctx = _get_ctx(ctx)
+    payload = {"command": command, "timeout": timeout}
+    if cwd:
+        payload["cwd"] = cwd
+
+    result = await _exec_operation(shipyard_ctx, "shell/exec", payload)
+    data = result.get("data", result)
+
+    # Format output
+    output_parts = []
+    if data.get("stdout"):
+        output_parts.append(data["stdout"])
+    if data.get("stderr"):
+        output_parts.append(f"stderr: {data['stderr']}")
+    if data.get("exit_code", 0) != 0:
+        output_parts.append(f"Exit code: {data['exit_code']}")
+
+    return "\n".join(output_parts) if output_parts else "Command completed (no output)"
+
+
+@mcp.tool()
+async def read_file(
+    path: str,
+    ctx: Context = None,
+) -> str:
+    """Read file content from the sandbox.
+
+    Args:
+        path: File path (relative to workspace or absolute)
+
+    Returns:
+        File content as string
+    """
+    shipyard_ctx = _get_ctx(ctx)
+    result = await _exec_operation(
+        shipyard_ctx,
+        "fs/read_file",
+        {"path": path},
+    )
+    data = result.get("data", result)
+    return data.get("content", str(data))
+
+
+@mcp.tool()
+async def write_file(
+    path: str,
+    content: str,
+    ctx: Context = None,
+) -> str:
+    """Write content to a file in the sandbox.
+
+    Creates the file if it doesn't exist, or overwrites if it does.
+    Parent directories are created automatically.
+
+    Args:
+        path: File path (relative to workspace or absolute)
+        content: Content to write
+
+    Returns:
+        Confirmation message
+    """
+    shipyard_ctx = _get_ctx(ctx)
+    result = await _exec_operation(
+        shipyard_ctx,
+        "fs/write_file",
+        {"path": path, "content": content},
+    )
+    data = result.get("data", result)
+    if data.get("success", True):
+        return f"File written: {path}"
+    return f"Failed to write file: {data}"
+
+
+@mcp.tool()
+async def list_files(
+    path: str = ".",
+    ctx: Context = None,
+) -> str:
+    """List files and directories in the sandbox.
+
+    Args:
+        path: Directory path (default: current workspace)
+
+    Returns:
+        List of files and directories
+    """
+    shipyard_ctx = _get_ctx(ctx)
+    result = await _exec_operation(
+        shipyard_ctx,
+        "fs/list_dir",
+        {"path": path},
+    )
+    data = result.get("data", result)
+    entries = data.get("entries", [])
+
+    if not entries:
+        return f"Directory '{path}' is empty"
+
+    lines = []
+    for entry in entries:
+        name = entry.get("name", "")
+        entry_type = entry.get("type", "file")
+        if entry_type == "directory":
+            lines.append(f"  {name}/")
+        else:
+            lines.append(f"  {name}")
+
+    return f"Contents of '{path}':\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def install_package(
+    package: str,
+    ctx: Context = None,
+) -> str:
+    """Install a Python package in the sandbox using pip.
+
+    Args:
+        package: Package name (e.g., 'requests', 'pandas==2.0.0')
+
+    Returns:
+        Installation result
+    """
+    shipyard_ctx = _get_ctx(ctx)
+    result = await _exec_operation(
+        shipyard_ctx,
+        "shell/exec",
+        {"command": f"pip install {package}", "timeout": 120},
+    )
+    data = result.get("data", result)
+
+    if data.get("exit_code", 0) == 0:
+        return f"Successfully installed: {package}"
+
+    stderr = data.get("stderr", "")
+    return f"Installation failed: {stderr}"
+
+
+@mcp.tool()
+async def get_sandbox_info(ctx: Context = None) -> str:
+    """Get information about the current sandbox environment.
+
+    Returns:
+        Sandbox information including Python version, available tools, etc.
+    """
+    shipyard_ctx = _get_ctx(ctx)
+    ship_id = await _ensure_ship(shipyard_ctx)
+
+    async with shipyard_ctx.http_session.get(
+        f"{shipyard_ctx.bay_url}/ship/{ship_id}"
+    ) as resp:
+        if resp.status == 200:
+            ship_data = await resp.json()
+            info = [
+                f"Ship ID: {ship_id}",
+                f"Session ID: {shipyard_ctx.session_id}",
+                f"Status: {'Running' if ship_data.get('status') == 1 else 'Unknown'}",
+            ]
+            if ship_data.get("expires_at"):
+                info.append(f"Expires at: {ship_data['expires_at']}")
+            return "\n".join(info)
+        else:
+            return f"Ship ID: {ship_id}\nSession ID: {shipyard_ctx.session_id}"
+
+
+# =============================================================================
+# MCP Resources
+# =============================================================================
+
+
+@mcp.resource("sandbox://info")
+async def sandbox_info_resource() -> str:
+    """Information about the Shipyard sandbox service."""
+    return """Shipyard Sandbox Service
+
+Shipyard provides secure, isolated Python and shell execution environments.
+
+Available tools:
+- execute_python: Run Python code
+- execute_shell: Run shell commands
+- read_file: Read file contents
+- write_file: Write to files
+- list_files: List directory contents
+- install_package: Install Python packages
+- get_sandbox_info: Get current sandbox information
+
+Each session gets a dedicated container with:
+- Full Python environment
+- Common CLI tools (git, curl, etc.)
+- Isolated filesystem
+- Network access (configurable)
+"""
+
+
+# =============================================================================
+# Entry Point
+# =============================================================================
+
+
+def main():
+    """Entry point for the MCP server."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Shipyard MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport mode (default: stdio)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="HTTP port (only used with --transport http)",
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="HTTP host (only used with --transport http)",
     )
 
-    server = ShipyardMCPServer(bay_url, access_token)
-    try:
-        await server.run_stdio()
-    finally:
-        await server.close()
+    args = parser.parse_args()
+
+    if args.transport == "http":
+        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

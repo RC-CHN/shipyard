@@ -21,7 +21,14 @@ dependencies = [
     "tomli>=2.0.0",
     "kubernetes-asyncio>=34.3.3",
     "websocket-client>=1.9.0",
+    "mcp>=1.0.0",
 ]
+
+[project.optional-dependencies.mcp]
+mcp = ["mcp[cli]>=1.0.0"]
+
+[project.scripts]
+shipyard-mcp = "app.mcp.run:main"
 
 [project.optional-dependencies]
 test = [
