@@ -375,6 +375,22 @@ class ShipService:
         # Forward request to ship container
         result = await forward_request_to_ship(ship.ip_address, request, session_id)
 
+        # Record execution history for python and shell operations
+        if request.type in ("ipython/exec", "shell/exec"):
+            exec_type = "python" if request.type == "ipython/exec" else "shell"
+            code = request.payload.get("code") if request.payload and exec_type == "python" else None
+            command = request.payload.get("command") if request.payload and exec_type == "shell" else None
+            execution_time_ms = result.data.get("execution_time_ms") if result.data else None
+
+            await db_service.create_execution_history(
+                session_id=session_id,
+                exec_type=exec_type,
+                success=result.success,
+                code=code,
+                command=command,
+                execution_time_ms=execution_time_ms,
+            )
+
         # Extend TTL after successful operation
         if result.success:
             await self._extend_ttl_after_operation(ship_id, session_id)

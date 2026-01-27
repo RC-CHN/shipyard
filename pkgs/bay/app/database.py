@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from sqlalchemy.pool import StaticPool
 from typing import Optional, List
 from app.config import settings
-from app.models import Ship, SessionShip, ShipStatus
+from app.models import Ship, SessionShip, ShipStatus, ExecutionHistory
 from datetime import datetime, timezone
 
 
@@ -368,6 +368,72 @@ class DatabaseService:
             )
             result = await session.execute(statement)
             return len(list(result.scalars().all()))
+        finally:
+            await session.close()
+
+    # Execution History operations
+    async def create_execution_history(
+        self,
+        session_id: str,
+        exec_type: str,
+        success: bool,
+        code: Optional[str] = None,
+        command: Optional[str] = None,
+        execution_time_ms: Optional[int] = None,
+    ) -> ExecutionHistory:
+        """Record an execution in history."""
+        history = ExecutionHistory(
+            session_id=session_id,
+            exec_type=exec_type,
+            code=code,
+            command=command,
+            success=success,
+            execution_time_ms=execution_time_ms,
+        )
+        session = self.get_session()
+        try:
+            session.add(history)
+            await session.commit()
+            await session.refresh(history)
+            return history
+        finally:
+            await session.close()
+
+    async def get_execution_history(
+        self,
+        session_id: str,
+        exec_type: Optional[str] = None,
+        success_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[List[ExecutionHistory], int]:
+        """Get execution history for a session."""
+        session = self.get_session()
+        try:
+            # Build query
+            conditions = [ExecutionHistory.session_id == session_id]
+            if exec_type:
+                conditions.append(ExecutionHistory.exec_type == exec_type)
+            if success_only:
+                conditions.append(ExecutionHistory.success == True)  # noqa: E712
+
+            # Count total
+            count_stmt = select(ExecutionHistory).where(*conditions)
+            count_result = await session.execute(count_stmt)
+            total = len(list(count_result.scalars().all()))
+
+            # Get entries
+            statement = (
+                select(ExecutionHistory)
+                .where(*conditions)
+                .order_by(ExecutionHistory.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            result = await session.execute(statement)
+            entries = list(result.scalars().all())
+
+            return entries, total
         finally:
             await session.close()
 

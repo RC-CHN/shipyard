@@ -65,6 +65,25 @@ class SessionShip(SessionShipBase, table=True):
     __tablename__ = "session_ships"  # type: ignore
 
 
+# Execution History for skill library support
+class ExecutionHistoryBase(SQLModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    session_id: str = Field(description="Session ID", index=True)
+    exec_type: str = Field(description="Execution type: 'python' or 'shell'")
+    code: Optional[str] = Field(default=None, description="Executed code (for python)")
+    command: Optional[str] = Field(default=None, description="Executed command (for shell)")
+    success: bool = Field(description="Whether execution succeeded")
+    execution_time_ms: Optional[int] = Field(default=None, description="Execution time in ms")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
+class ExecutionHistory(ExecutionHistoryBase, table=True):
+    __tablename__ = "execution_history"  # type: ignore
+
+
 # API Request/Response Models
 class ShipSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -153,3 +172,22 @@ class DownloadFileResponse(BaseModel):
     success: bool
     message: str
     error: Optional[str] = None
+
+
+# Execution History API Models
+class ExecutionHistoryEntry(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    session_id: str
+    exec_type: str
+    code: Optional[str] = None
+    command: Optional[str] = None
+    success: bool
+    execution_time_ms: Optional[int] = None
+    created_at: datetime
+
+
+class ExecutionHistoryResponse(BaseModel):
+    entries: list[ExecutionHistoryEntry]
+    total: int

@@ -217,3 +217,45 @@ async def delete_session(session_id: str, token: str = Depends(verify_token)):
         await session.commit()
     finally:
         await session.close()
+
+
+# Execution History API
+from app.models import ExecutionHistoryResponse, ExecutionHistoryEntry
+
+
+@router.get("/sessions/{session_id}/history", response_model=ExecutionHistoryResponse)
+async def get_execution_history(
+    session_id: str,
+    exec_type: Optional[str] = None,
+    success_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+    token: str = Depends(verify_token),
+):
+    """Get execution history for a session.
+
+    This enables agents to retrieve their successful execution paths
+    for skill library construction (inspired by VOYAGER).
+
+    Args:
+        session_id: The session ID
+        exec_type: Filter by type ('python' or 'shell')
+        success_only: If True, only return successful executions
+        limit: Maximum number of entries to return
+        offset: Number of entries to skip
+    """
+    entries, total = await db_service.get_execution_history(
+        session_id=session_id,
+        exec_type=exec_type,
+        success_only=success_only,
+        limit=limit,
+        offset=offset,
+    )
+
+    return ExecutionHistoryResponse(
+        entries=[
+            ExecutionHistoryEntry.model_validate(e)
+            for e in entries
+        ],
+        total=total,
+    )

@@ -23,6 +23,8 @@ class ExecuteShellResponse(BaseModel):
     pid: Optional[int] = None
     process_id: Optional[str] = None  # 用于后台进程
     error: Optional[str] = None
+    command: Optional[str] = None  # Original command that was executed
+    execution_time_ms: Optional[int] = None  # Execution time in milliseconds
 
 
 class ProcessInfo(BaseModel):

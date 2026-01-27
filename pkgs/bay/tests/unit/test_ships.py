@@ -485,3 +485,64 @@ class TestShipStatusValidation:
             ip_address=None
         )
         assert ship_without_ip.ip_address is None
+
+
+class TestExecutionHistory:
+    """Execution History 模型测试"""
+
+    def test_execution_history_model(self):
+        """测试 ExecutionHistory 模型"""
+        from app.models import ExecutionHistory
+
+        history = ExecutionHistory(
+            session_id="test-session",
+            exec_type="python",
+            code="print('hello')",
+            success=True,
+            execution_time_ms=42,
+        )
+
+        assert history.session_id == "test-session"
+        assert history.exec_type == "python"
+        assert history.code == "print('hello')"
+        assert history.success is True
+        assert history.execution_time_ms == 42
+        assert history.id is not None
+
+    def test_execution_history_shell(self):
+        """测试 ExecutionHistory Shell 命令"""
+        from app.models import ExecutionHistory
+
+        history = ExecutionHistory(
+            session_id="test-session",
+            exec_type="shell",
+            command="ls -la",
+            success=True,
+            execution_time_ms=15,
+        )
+
+        assert history.exec_type == "shell"
+        assert history.command == "ls -la"
+        assert history.code is None
+
+    def test_execution_history_response_model(self):
+        """测试 ExecutionHistoryResponse 模型"""
+        from app.models import ExecutionHistoryResponse, ExecutionHistoryEntry
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        entry = ExecutionHistoryEntry(
+            id="entry-1",
+            session_id="test-session",
+            exec_type="python",
+            code="print('hello')",
+            command=None,
+            success=True,
+            execution_time_ms=42,
+            created_at=now,
+        )
+
+        response = ExecutionHistoryResponse(entries=[entry], total=1)
+        assert len(response.entries) == 1
+        assert response.total == 1
+        assert response.entries[0].code == "print('hello')"
