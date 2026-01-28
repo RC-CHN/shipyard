@@ -56,7 +56,6 @@ class TestShipyard:
         create_data = {
             "ttl": 600,
             "spec": {"cpus": 0.5, "memory": "256m"},
-            "max_session_num": 1,
         }
 
         response = client.post("/ship", json=create_data, headers=DEFAULT_HEADERS)
@@ -69,8 +68,6 @@ class TestShipyard:
         # Validate ship data
         assert ship_data["status"] == 1  # running
         assert ship_data["ttl"] == 600
-        assert ship_data["max_session_num"] == 1
-        assert ship_data["current_session_num"] == 1
         assert "created_at" in ship_data
         assert "updated_at" in ship_data
 
@@ -90,13 +87,15 @@ class TestShipyard:
         ship_info = response.json()
         logger.info(f"Ship info after startup: {ship_info}")
 
-        # Delete ship
+        # Delete ship (soft delete: stop container but keep record)
         response = client.delete(f"/ship/{ship_id}", headers=DEFAULT_HEADERS)
         assert response.status_code == 204
 
-        # Verify ship is deleted
+        # Verify ship is stopped (record still exists)
         response = client.get(f"/ship/{ship_id}", headers=DEFAULT_HEADERS)
-        assert response.status_code == 404
+        assert response.status_code == 200
+        stopped_ship = response.json()
+        assert stopped_ship["status"] == 0  # stopped
 
     def test_ship_not_found(self, client):
         """Test getting non-existent ship"""
@@ -447,31 +446,30 @@ class TestShipyard:
             client.delete(f"/ship/{ship_id}", headers=DEFAULT_HEADERS)
 
     def test_multiple_sessions(self, client):
-        """Test ship reuse with multiple sessions"""
-        # Create ship with max_session_num = 2
-        create_data = {"ttl": 600, "max_session_num": 2}
+        """Test that different sessions do NOT share the same ship (1:1 binding)."""
+        # Create ship for session 1
+        create_data = {"ttl": 600}
         response = client.post("/ship", json=create_data, headers=DEFAULT_HEADERS)
         assert response.status_code == 201
 
         ship_data = response.json()
-        ship_id = ship_data["id"]
-        assert ship_data["current_session_num"] == 1
+        ship_id_1 = ship_data["id"]
 
+        ship_id_2 = None
         try:
-            # Try to use ship with another session
+            # Create ship for session 2
             headers_session2 = {**DEFAULT_HEADERS, "X-SESSION-ID": "test-session-456"}
-
             response = client.post("/ship", json=create_data, headers=headers_session2)
-            # Should reuse existing ship since max_session_num = 2
             assert response.status_code == 201
 
-            reused_ship = response.json()
-            # Should be the same ship or a new one depending on implementation
-            logger.info(f"Original ship: {ship_id}, Reused ship: {reused_ship['id']}")
+            ship_id_2 = response.json()["id"]
+            assert ship_id_2 != ship_id_1
 
         finally:
             # Clean up
-            client.delete(f"/ship/{ship_id}", headers=DEFAULT_HEADERS)
+            client.delete(f"/ship/{ship_id_1}", headers=DEFAULT_HEADERS)
+            if ship_id_2:
+                client.delete(f"/ship/{ship_id_2}", headers=headers_session2)
 
     def test_invalid_operations(self, client):
         """Test invalid operation requests"""

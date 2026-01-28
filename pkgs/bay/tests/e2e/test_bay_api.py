@@ -63,7 +63,7 @@ def fresh_ship(
         spec: dict[str, Any] = {"cpus": cpus, "memory": memory}
         if disk:
             spec["disk"] = disk
-        payload = {"ttl": ttl, "max_session_num": 1, "spec": spec}
+        payload = {"ttl": ttl, "spec": spec}
 
         resp = requests.post(
             f"{BAY_URL}/ship",
@@ -203,7 +203,7 @@ class TestShipCreation:
 
     def test_create_ship_invalid_payload(self, bay_url, auth_headers):
         """/ship 创建 Ship（非法参数）"""
-        payload = {"ttl": 0, "max_session_num": 0}
+        payload = {"ttl": 0}
         resp = requests.post(
             f"{bay_url}/ship",
             headers={**auth_headers, "Content-Type": "application/json"},
@@ -217,7 +217,6 @@ class TestShipCreation:
         # 使用 1m 内存 (1 MiB)，如果没有修正，容器必死无疑
         payload = {
             "ttl": 60,
-            "max_session_num": 1,
             "spec": {"cpus": 0.1, "memory": "1m"},
         }
         resp = requests.post(
@@ -238,7 +237,6 @@ class TestShipCreation:
         """创建 Ship（带磁盘限制）"""
         payload = {
             "ttl": 60,
-            "max_session_num": 1,
             "spec": {"cpus": 0.5, "memory": "256m", "disk": "2Gi"},
         }
         resp = requests.post(
@@ -529,7 +527,7 @@ class TestShipDeletion:
 
         # 创建 Ship
         spec: dict[str, Any] = {"cpus": 0.5, "memory": "256m"}
-        payload = {"ttl": 60, "max_session_num": 1, "spec": spec}
+        payload = {"ttl": 60, "spec": spec}
 
         resp = requests.post(
             f"{bay_url}/ship",
@@ -564,22 +562,16 @@ class TestShipDeletion:
 
 @pytest.mark.e2e
 class TestMultipleSessions:
-    """阶段 5.5: 多会话复用测试"""
+    """阶段 5.5: 多会话隔离测试（Session-Ship 1:1）"""
 
     def test_multiple_sessions(self, bay_url):
-        """测试 Ship 多会话复用功能
-
-        创建一个 max_session_num=2 的 Ship，然后用不同的 session ID 访问，
-        验证是否可以复用同一个 Ship。
-        """
+        """不同 session 应分配不同的 Ship（不再支持 max_session_num 复用逻辑）。"""
         # 创建第一个 session
         session_id_1 = f"multi-session-test-{uuid.uuid4().hex[:8]}"
         headers_1 = get_auth_headers(session_id_1)
 
-        # 创建 Ship with max_session_num = 2
         payload = {
             "ttl": 600,
-            "max_session_num": 2,
             "spec": {"cpus": 0.5, "memory": "256m"},
         }
 
@@ -591,15 +583,12 @@ class TestMultipleSessions:
         )
         assert resp.status_code == 201, f"创建 Ship 失败: {resp.status_code}"
 
-        ship_data = resp.json()
-        ship_id = ship_data.get("id")
-        assert ship_data.get("current_session_num") == 1, "初始会话数应为 1"
+        ship_id_1 = resp.json().get("id")
 
+        ship_id_2 = None
         try:
-            # 等待 Ship 就绪
             time.sleep(3)
 
-            # 用第二个 session ID 请求
             session_id_2 = f"multi-session-test-{uuid.uuid4().hex[:8]}"
             headers_2 = get_auth_headers(session_id_2)
 
@@ -609,23 +598,21 @@ class TestMultipleSessions:
                 json=payload,
                 timeout=120,
             )
-            # 应该成功创建或复用
             assert resp.status_code == 201, f"第二个会话请求失败: {resp.status_code}"
 
-            reused_ship = resp.json()
-            # 记录是否复用了同一个 Ship
-            if reused_ship.get("id") == ship_id:
-                # 复用了同一个 Ship
-                assert reused_ship.get("current_session_num") == 2, "复用后会话数应为 2"
-            # 如果是新 Ship 也是可以接受的行为
+            ship_id_2 = resp.json().get("id")
+            assert ship_id_2 and ship_id_2 != ship_id_1
 
         finally:
-            # 清理
-            requests.delete(
-                f"{bay_url}/ship/{ship_id}",
-                headers=headers_1,
-                timeout=30,
-            )
+            try:
+                if ship_id_1:
+                    requests.delete(f"{bay_url}/ship/{ship_id_1}", headers=headers_1, timeout=30)
+            finally:
+                if ship_id_2:
+                    try:
+                        requests.delete(f"{bay_url}/ship/{ship_id_2}", headers=headers_2, timeout=30)
+                    except Exception:
+                        pass
 
 
 @pytest.mark.e2e
@@ -657,7 +644,6 @@ class TestDataPersistence:
             # Step 1: 创建 Ship
             payload = {
                 "ttl": 120,
-                "max_session_num": 1,
                 "spec": {"cpus": 0.5, "memory": "256m"},
             }
             resp = requests.post(
@@ -721,7 +707,6 @@ class TestDataPersistence:
             # Step 5: 使用相同 Session ID 重新创建 Ship
             payload = {
                 "ttl": 120,
-                "max_session_num": 1,
                 "spec": {"cpus": 0.5, "memory": "256m"},
             }
             resp = requests.post(
@@ -784,7 +769,7 @@ class TestShipsRouteExtended:
 
     def test_create_ship_missing_session_id(self, bay_url):
         """/ship 创建 Ship 需要 X-SESSION-ID 头"""
-        payload = {"ttl": 60, "max_session_num": 1}
+        payload = {"ttl": 60}
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
         # 不包含 X-SESSION-ID
         resp = requests.post(
@@ -808,8 +793,8 @@ class TestShipsRouteExtended:
             assert "created_at" in data, "响应应包含 created_at 字段"
             assert "updated_at" in data, "响应应包含 updated_at 字段"
             assert "ttl" in data, "响应应包含 ttl 字段"
-            assert "max_session_num" in data, "响应应包含 max_session_num 字段"
-            assert "current_session_num" in data, "响应应包含 current_session_num 字段"
+            assert "container_id" in data, "响应应包含 container_id 字段"
+            assert "ip_address" in data, "响应应包含 ip_address 字段"
 
     def test_list_ships_returns_created_ship(self, bay_url):
         """验证创建的 Ship 出现在列表中"""
@@ -845,7 +830,7 @@ class TestShipPermanentDeletion:
         session_id = f"perm-delete-{uuid.uuid4().hex[:8]}"
         headers = get_auth_headers(session_id)
 
-        payload = {"ttl": 60, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+        payload = {"ttl": 60, "spec": {"cpus": 0.5, "memory": "256m"}}
         resp = requests.post(
             f"{bay_url}/ship",
             headers={**headers, "Content-Type": "application/json"},
@@ -1109,7 +1094,7 @@ class TestStartShip:
         session_id = f"start-test-{uuid.uuid4().hex[:8]}"
         headers = get_auth_headers(session_id)
 
-        payload = {"ttl": 120, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+        payload = {"ttl": 120, "spec": {"cpus": 0.5, "memory": "256m"}}
         resp = requests.post(
             f"{bay_url}/ship",
             headers={**headers, "Content-Type": "application/json"},
@@ -1228,7 +1213,6 @@ class TestSessionStateOnShipStop:
 
         payload = {
             "ttl": 600,
-            "max_session_num": 1,
             "spec": {"cpus": 0.5, "memory": "256m"},
         }
 
@@ -1312,84 +1296,8 @@ class TestSessionStateOnShipStop:
                 pass
 
     def test_multiple_sessions_become_inactive_when_ship_stopped(self, bay_url):
-        """当 Ship 停止时，所有关联的会话都应该变为 inactive"""
-        # 创建第一个 session
-        session_id_1 = f"multi-stop-test-{uuid.uuid4().hex[:8]}"
-        headers_1 = get_auth_headers(session_id_1)
-
-        # 创建 Ship with max_session_num = 2
-        payload = {
-            "ttl": 600,
-            "max_session_num": 2,
-            "spec": {"cpus": 0.5, "memory": "256m"},
-        }
-
-        resp = requests.post(
-            f"{bay_url}/ship",
-            headers={**headers_1, "Content-Type": "application/json"},
-            json=payload,
-            timeout=120,
-        )
-        assert resp.status_code == 201, f"创建 Ship 失败: {resp.status_code}"
-        ship_id = resp.json()["id"]
-
-        try:
-            time.sleep(3)
-
-            # 用第二个 session ID 加入
-            session_id_2 = f"multi-stop-test-{uuid.uuid4().hex[:8]}"
-            headers_2 = get_auth_headers(session_id_2)
-
-            resp = requests.post(
-                f"{bay_url}/ship",
-                headers={**headers_2, "Content-Type": "application/json"},
-                json=payload,
-                timeout=120,
-            )
-            assert resp.status_code == 201, f"第二个会话请求失败: {resp.status_code}"
-
-            # 验证两个会话都是活跃的
-            sessions_resp = requests.get(
-                f"{bay_url}/ship/{ship_id}/sessions",
-                headers=headers_1,
-                timeout=5,
-            )
-            assert sessions_resp.status_code == 200
-            sessions_data = sessions_resp.json()
-            active_count = sum(1 for s in sessions_data["sessions"] if s["is_active"])
-            assert active_count >= 1, "至少应该有一个活跃会话"
-
-            # 停止 Ship
-            resp = requests.delete(
-                f"{bay_url}/ship/{ship_id}",
-                headers=headers_1,
-                timeout=30,
-            )
-            assert resp.status_code == 204, f"停止 Ship 失败: {resp.status_code}"
-
-            time.sleep(1)
-
-            # 验证所有会话现在都是非活跃的
-            for sid, hdrs in [(session_id_1, headers_1), (session_id_2, headers_2)]:
-                sessions_resp = requests.get(
-                    f"{bay_url}/sessions/{sid}",
-                    headers=hdrs,
-                    timeout=5,
-                )
-                if sessions_resp.status_code == 200:
-                    session_data = sessions_resp.json()
-                    assert session_data["is_active"] is False, f"会话 {sid} 应该变为 inactive"
-
-        finally:
-            # 清理
-            try:
-                requests.delete(
-                    f"{bay_url}/ship/{ship_id}/permanent",
-                    headers=headers_1,
-                    timeout=30,
-                )
-            except Exception:
-                pass
+        """此版本不再支持多 session 绑定同一 ship；跳过该场景。"""
+        pytest.skip("Session-Ship 1:1 绑定后，不存在一个 ship 关联多个 session 的场景")
 
 
 # =============================================================================
@@ -1609,7 +1517,7 @@ class TestWebSocketTerminalAsync:
 
             # 需要同步创建 Ship
             headers = get_auth_headers(test_session_id)
-            payload = {"ttl": 120, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+            payload = {"ttl": 120, "spec": {"cpus": 0.5, "memory": "256m"}}
 
             resp = requests.post(
                 f"{BAY_URL}/ship",
@@ -1668,7 +1576,7 @@ class TestWebSocketTerminalAsync:
             test_session_id = f"ws-close-{uuid.uuid4().hex[:8]}"
 
             headers = get_auth_headers(test_session_id)
-            payload = {"ttl": 120, "max_session_num": 1, "spec": {"cpus": 0.5, "memory": "256m"}}
+            payload = {"ttl": 120, "spec": {"cpus": 0.5, "memory": "256m"}}
 
             resp = requests.post(
                 f"{BAY_URL}/ship",

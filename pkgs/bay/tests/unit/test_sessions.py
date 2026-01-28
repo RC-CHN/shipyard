@@ -166,7 +166,6 @@ class TestExpireSessionsForShip:
         ship = Ship(
             id="test-ship-expire-sessions",
             ttl=3600,
-            max_session_num=2,
             status=ShipStatus.RUNNING
         )
         ship = await db_service.create_ship(ship)
@@ -227,7 +226,6 @@ class TestExpireSessionsForShip:
         ship = Ship(
             id="test-ship-skip-expired",
             ttl=3600,
-            max_session_num=2,
             status=ShipStatus.RUNNING
         )
         ship = await db_service.create_ship(ship)
@@ -271,7 +269,6 @@ class TestExpireSessionsForShip:
         ship = Ship(
             id="test-ship-no-sessions",
             ttl=3600,
-            max_session_num=1,
             status=ShipStatus.RUNNING
         )
         ship = await db_service.create_ship(ship)
