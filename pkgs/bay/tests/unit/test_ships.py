@@ -26,17 +26,18 @@ class TestShipModels:
         from app.models import CreateShipRequest, ShipSpec
 
         # 基本创建请求
-        request = CreateShipRequest(ttl=3600, max_session_num=1)
+        request = CreateShipRequest(ttl=3600)
         assert request.ttl == 3600
-        assert request.max_session_num == 1
         assert request.spec is None
+        assert request.force_create is False
 
         # 带规格的创建请求
         spec = ShipSpec(cpus=0.5, memory="256m", disk="1Gi")
-        request_with_spec = CreateShipRequest(ttl=3600, spec=spec)
+        request_with_spec = CreateShipRequest(ttl=3600, spec=spec, force_create=True)
         assert request_with_spec.spec.cpus == 0.5
         assert request_with_spec.spec.memory == "256m"
         assert request_with_spec.spec.disk == "1Gi"
+        assert request_with_spec.force_create is True
 
     def test_create_ship_request_validation(self):
         """测试 CreateShipRequest 验证"""
@@ -45,14 +46,10 @@ class TestShipModels:
 
         # ttl 必须大于 0
         with pytest.raises(ValidationError):
-            CreateShipRequest(ttl=0, max_session_num=1)
+            CreateShipRequest(ttl=0)
 
         with pytest.raises(ValidationError):
-            CreateShipRequest(ttl=-1, max_session_num=1)
-
-        # max_session_num 必须大于 0
-        with pytest.raises(ValidationError):
-            CreateShipRequest(ttl=3600, max_session_num=0)
+            CreateShipRequest(ttl=-1)
 
     def test_ship_spec_model(self):
         """测试 ShipSpec 模型"""
@@ -97,8 +94,6 @@ class TestShipModels:
             container_id="container-abc",
             ip_address="172.17.0.2",
             ttl=3600,
-            max_session_num=2,
-            current_session_num=1,
             expires_at=expires_at,
         )
 
@@ -107,8 +102,6 @@ class TestShipModels:
         assert response.container_id == "container-abc"
         assert response.ip_address == "172.17.0.2"
         assert response.ttl == 3600
-        assert response.max_session_num == 2
-        assert response.current_session_num == 1
 
     def test_ship_response_optional_fields(self):
         """测试 ShipResponse 可选字段"""
@@ -124,8 +117,6 @@ class TestShipModels:
             container_id=None,
             ip_address=None,
             ttl=3600,
-            max_session_num=1,
-            current_session_num=0,
             expires_at=None,
         )
 
@@ -343,8 +334,6 @@ class TestShipBase:
 
         ship = Ship(ttl=3600)
         assert ship.status == ShipStatus.CREATING
-        assert ship.max_session_num == 1
-        assert ship.current_session_num == 0
         assert ship.container_id is None
         assert ship.ip_address is None
         assert ship.id is not None  # 自动生成
@@ -362,8 +351,6 @@ class TestShipBase:
             container_id="container-123",
             ip_address="10.0.0.1",
             ttl=7200,
-            max_session_num=5,
-            current_session_num=3,
         )
 
         assert ship.id == "custom-id"
@@ -371,8 +358,6 @@ class TestShipBase:
         assert ship.container_id == "container-123"
         assert ship.ip_address == "10.0.0.1"
         assert ship.ttl == 7200
-        assert ship.max_session_num == 5
-        assert ship.current_session_num == 3
 
 
 class TestWebSocketTerminalLogic:
@@ -500,3 +485,64 @@ class TestShipStatusValidation:
             ip_address=None
         )
         assert ship_without_ip.ip_address is None
+
+
+class TestExecutionHistory:
+    """Execution History 模型测试"""
+
+    def test_execution_history_model(self):
+        """测试 ExecutionHistory 模型"""
+        from app.models import ExecutionHistory
+
+        history = ExecutionHistory(
+            session_id="test-session",
+            exec_type="python",
+            code="print('hello')",
+            success=True,
+            execution_time_ms=42,
+        )
+
+        assert history.session_id == "test-session"
+        assert history.exec_type == "python"
+        assert history.code == "print('hello')"
+        assert history.success is True
+        assert history.execution_time_ms == 42
+        assert history.id is not None
+
+    def test_execution_history_shell(self):
+        """测试 ExecutionHistory Shell 命令"""
+        from app.models import ExecutionHistory
+
+        history = ExecutionHistory(
+            session_id="test-session",
+            exec_type="shell",
+            command="ls -la",
+            success=True,
+            execution_time_ms=15,
+        )
+
+        assert history.exec_type == "shell"
+        assert history.command == "ls -la"
+        assert history.code is None
+
+    def test_execution_history_response_model(self):
+        """测试 ExecutionHistoryResponse 模型"""
+        from app.models import ExecutionHistoryResponse, ExecutionHistoryEntry
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        entry = ExecutionHistoryEntry(
+            id="entry-1",
+            session_id="test-session",
+            exec_type="python",
+            code="print('hello')",
+            command=None,
+            success=True,
+            execution_time_ms=42,
+            created_at=now,
+        )
+
+        response = ExecutionHistoryResponse(entries=[entry], total=1)
+        assert len(response.entries) == 1
+        assert response.total == 1
+        assert response.entries[0].code == "print('hello')"

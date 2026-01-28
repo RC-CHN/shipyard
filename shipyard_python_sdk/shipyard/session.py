@@ -71,3 +71,37 @@ class SessionShip(ShipInfo):
         await self._client.download_file(
             self.id, remote_file_path, self._session_id, local_file_path
         )
+
+    async def get_execution_history(
+        self,
+        exec_type: str | None = None,
+        success_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Get execution history for this session.
+
+        This enables agents to retrieve their successful execution paths
+        for skill library construction (inspired by VOYAGER).
+
+        Args:
+            exec_type: Filter by type ('python' or 'shell')
+            success_only: If True, only return successful executions
+            limit: Maximum number of entries to return
+            offset: Number of entries to skip
+
+        Returns:
+            Dict with 'entries' list and 'total' count
+        """
+        return await self._client.get_execution_history(
+            session_id=self._session_id,
+            exec_type=exec_type,
+            success_only=success_only,
+            limit=limit,
+            offset=offset,
+        )
+
+    @property
+    def session_id(self) -> str:
+        """Get the session ID."""
+        return self._session_id

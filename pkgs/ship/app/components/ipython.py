@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
@@ -24,6 +25,8 @@ class ExecuteCodeResponse(BaseModel):
     output: dict = {}
     error: Optional[str] = None
     kernel_id: str
+    code: Optional[str] = None  # Original code that was executed
+    execution_time_ms: Optional[int] = None  # Execution time in milliseconds
 
 
 class KernelInfo(BaseModel):
@@ -116,6 +119,7 @@ async def execute_code_in_kernel(
     await ensure_kernel_running(km)
 
     kc = km.client()
+    start_time = time.monotonic()
 
     try:
         # 执行代码
@@ -164,21 +168,27 @@ async def execute_code_in_kernel(
                 break
 
         outputs["text"] = "".join(plains).strip()
+        execution_time_ms = int((time.monotonic() - start_time) * 1000)
 
         return {
             "success": error is None,
             "execution_count": execution_count,
             "output": outputs,
             "error": error,
+            "code": code,
+            "execution_time_ms": execution_time_ms,
         }
 
     except Exception as e:
+        execution_time_ms = int((time.monotonic() - start_time) * 1000)
         print(f"Error during code execution: {e}")
         return {
             "success": False,
             "execution_count": None,
             "output": {},
             "error": f"Execution error: {str(e)}",
+            "code": code,
+            "execution_time_ms": execution_time_ms,
         }
 
 
@@ -204,6 +214,8 @@ async def execute_code(
             output=result["output"],
             error=result["error"],
             kernel_id=session_id,
+            code=result.get("code"),
+            execution_time_ms=result.get("execution_time_ms"),
         )
 
     except Exception as e:

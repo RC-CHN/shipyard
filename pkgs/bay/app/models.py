@@ -28,12 +28,6 @@ class ShipBase(SQLModel):
     container_id: Optional[str] = Field(default=None)
     ip_address: Optional[str] = Field(default=None)
     ttl: int = Field(description="Time to live in seconds")
-    max_session_num: int = Field(
-        default=1, description="Maximum number of sessions that can use this ship"
-    )
-    current_session_num: int = Field(
-        default=0, description="Current number of active sessions"
-    )
     expires_at: Optional[datetime] = Field(
         default=None,
         description="When this ship will expire based on all sessions",
@@ -71,6 +65,38 @@ class SessionShip(SessionShipBase, table=True):
     __tablename__ = "session_ships"  # type: ignore
 
 
+# Execution History for skill library support
+class ExecutionHistoryBase(SQLModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    session_id: str = Field(description="Session ID", index=True)
+    exec_type: str = Field(description="Execution type: 'python' or 'shell'")
+    code: Optional[str] = Field(default=None, description="Executed code (for python)")
+    command: Optional[str] = Field(default=None, description="Executed command (for shell)")
+    success: bool = Field(description="Whether execution succeeded")
+    execution_time_ms: Optional[int] = Field(default=None, description="Execution time in ms")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+    # Skill library metadata fields
+    description: Optional[str] = Field(
+        default=None,
+        description="Human-readable description of what this execution does"
+    )
+    tags: Optional[str] = Field(
+        default=None,
+        description="Comma-separated tags for categorization (e.g., 'data-processing,pandas')"
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Agent notes/annotations about this execution"
+    )
+
+
+class ExecutionHistory(ExecutionHistoryBase, table=True):
+    __tablename__ = "execution_history"  # type: ignore
+
+
 # API Request/Response Models
 class ShipSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -92,9 +118,6 @@ class CreateShipRequest(BaseModel):
 
     ttl: int = Field(..., gt=0, description="Time to live in seconds")
     spec: Optional[ShipSpec] = Field(None, description="Ship specifications")
-    max_session_num: int = Field(
-        default=1, gt=0, description="Maximum number of sessions that can use this ship"
-    )
     force_create: bool = Field(
         default=False,
         description="If True, skip all reuse logic and always create a new container"
@@ -111,10 +134,8 @@ class ShipResponse(BaseModel):
     container_id: Optional[str]
     ip_address: Optional[str]
     ttl: int
-    max_session_num: int
-    current_session_num: int
     expires_at: Optional[datetime] = Field(
-        None, description="When this ship will expire based on all sessions"
+        None, description="When this ship will expire based on session expiration"
     )
 
 
@@ -131,6 +152,10 @@ class ExecResponse(BaseModel):
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    execution_id: Optional[str] = Field(
+        default=None,
+        description="Execution history ID for this operation (only for python/shell exec)"
+    )
 
 
 class ExtendTTLRequest(BaseModel):
@@ -164,3 +189,26 @@ class DownloadFileResponse(BaseModel):
     success: bool
     message: str
     error: Optional[str] = None
+
+
+# Execution History API Models
+class ExecutionHistoryEntry(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    session_id: str
+    exec_type: str
+    code: Optional[str] = None
+    command: Optional[str] = None
+    success: bool
+    execution_time_ms: Optional[int] = None
+    created_at: datetime
+    # Skill library metadata fields
+    description: Optional[str] = None
+    tags: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ExecutionHistoryResponse(BaseModel):
+    entries: list[ExecutionHistoryEntry]
+    total: int

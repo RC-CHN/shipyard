@@ -5,6 +5,7 @@ Shipyard Python SDK - Main client implementation
 import os
 import aiohttp
 from typing import Optional, Dict, Any, Union
+import warnings
 
 from .types import Spec
 from .session import SessionShip
@@ -65,21 +66,31 @@ class ShipyardClient:
         self,
         ttl: int,
         spec: Optional[Spec] = None,
-        max_session_num: int = 1,
+        max_session_num: int | None = None,
         session_id: Optional[str] = None,
+        force_create: bool = False,
     ) -> SessionShip:
         """
-        Create a new ship or reuse an existing one
+        Create a new ship or reuse an existing one for the session.
+
+        With 1:1 Session-Ship binding, each session gets a dedicated ship.
 
         Args:
             ttl: Time to live in seconds
             spec: Ship specifications for resource allocation
-            max_session_num: Maximum number of sessions that can use this ship
+            max_session_num: Deprecated. Ignored (Shipyard enforces 1:1 binding).
             session_id: Session ID (if not provided, a random one will be generated)
+            force_create: If True, skip reuse logic and always create new container
 
         Returns:
             SessionShip: The created or reused ship session
         """
+        if max_session_num is not None:
+            warnings.warn(
+                "`max_session_num` is deprecated and ignored (Shipyard enforces 1:1 Session-Ship binding).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if session_id is None:
             import uuid
 
@@ -88,7 +99,10 @@ class ShipyardClient:
         session = await self._get_session()
 
         # Prepare request payload
-        payload: Dict[str, Any] = {"ttl": ttl, "max_session_num": max_session_num}
+        payload: Dict[str, Any] = {"ttl": ttl}
+
+        if force_create:
+            payload["force_create"] = True
 
         if spec:
             spec_dict: Dict[str, Union[float, str]] = {}
@@ -112,6 +126,52 @@ class ShipyardClient:
                 raise Exception(
                     f"Failed to create ship: {response.status} {error_text}"
                 )
+
+    async def get_or_create_session(
+        self,
+        session_id: str,
+        ttl: int = 3600,
+        spec: Optional[Spec] = None,
+    ) -> SessionShip:
+        """
+        Get or create a session with a dedicated ship.
+
+        This is the recommended Session-First API. If a session already exists
+        with a running ship, it will be returned. Otherwise, a new ship will
+        be created (or allocated from the warm pool).
+
+        Args:
+            session_id: The session ID to get or create
+            ttl: Time to live in seconds (default: 1 hour)
+            spec: Ship specifications for resource allocation
+
+        Returns:
+            SessionShip: The session's ship
+        """
+        return await self.create_ship(ttl=ttl, spec=spec, session_id=session_id)
+
+    def session(
+        self,
+        session_id: str,
+        ttl: int = 3600,
+        spec: Optional[Spec] = None,
+    ) -> "SessionContext":
+        """
+        Context manager for working with a session.
+
+        Usage:
+            async with client.session("my-session") as session:
+                result = await session.python.exec("print('hello')")
+
+        Args:
+            session_id: The session ID
+            ttl: Time to live in seconds (default: 1 hour)
+            spec: Ship specifications for resource allocation
+
+        Returns:
+            SessionContext: Context manager that yields a SessionShip
+        """
+        return SessionContext(self, session_id, ttl, spec)
 
     async def get_ship(self, ship_id: str) -> Optional[Dict[str, Any]]:
         """Get ship information by ID"""
@@ -235,3 +295,76 @@ class ShipyardClient:
                 raise Exception(
                     f"Failed to download file: {response.status} {error_text}"
                 )
+
+    async def get_execution_history(
+        self,
+        session_id: str,
+        exec_type: Optional[str] = None,
+        success_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Get execution history for a session.
+
+        This enables agents to retrieve their successful execution paths
+        for skill library construction (inspired by VOYAGER).
+
+        Args:
+            session_id: The session ID
+            exec_type: Filter by type ('python' or 'shell')
+            success_only: If True, only return successful executions
+            limit: Maximum number of entries to return
+            offset: Number of entries to skip
+
+        Returns:
+            Dict with 'entries' list and 'total' count
+        """
+        session = await self._get_session()
+
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if exec_type:
+            params["exec_type"] = exec_type
+        if success_only:
+            params["success_only"] = "true"
+
+        async with session.get(
+            f"{self.endpoint_url}/sessions/{session_id}/history",
+            params=params,
+        ) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                error_text = await response.text()
+                raise Exception(
+                    f"Failed to get execution history: {response.status} {error_text}"
+                )
+
+
+class SessionContext:
+    """Context manager for working with a session."""
+
+    def __init__(
+        self,
+        client: ShipyardClient,
+        session_id: str,
+        ttl: int,
+        spec: Optional[Spec],
+    ):
+        self._client = client
+        self._session_id = session_id
+        self._ttl = ttl
+        self._spec = spec
+        self._ship: Optional[SessionShip] = None
+
+    async def __aenter__(self) -> SessionShip:
+        self._ship = await self._client.get_or_create_session(
+            session_id=self._session_id,
+            ttl=self._ttl,
+            spec=self._spec,
+        )
+        return self._ship
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Session resources are managed by TTL, no cleanup needed
+        pass

@@ -52,11 +52,8 @@ class ShipInfo:
         return self._data["ttl"]
 
     @property
-    def max_session_num(self) -> int:
-        """Maximum number of sessions"""
-        return self._data["max_session_num"]
-
-    @property
-    def current_session_num(self) -> int:
-        """Current number of sessions"""
-        return self._data["current_session_num"]
+    def expires_at(self) -> Optional[datetime]:
+        """Expiration timestamp"""
+        if "expires_at" in self._data and self._data["expires_at"]:
+            return datetime.fromisoformat(self._data["expires_at"].replace("Z", "+00:00"))
+        return None

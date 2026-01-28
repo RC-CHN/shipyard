@@ -164,7 +164,6 @@ const closeDropdownWithDelay = () => {
               <th class="px-6 py-4 text-left">ID</th>
               <th class="px-6 py-4 text-left">IP 地址</th>
               <th class="px-6 py-4 text-left">状态</th>
-              <th class="px-6 py-4 text-left">会话数</th>
               <th class="px-6 py-4 text-left">剩余时间 (TTL)</th>
               <th class="px-6 py-4 text-right">操作</th>
             </tr>
@@ -185,15 +184,6 @@ const closeDropdownWithDelay = () => {
               </td>
               <td class="px-6 py-4 whitespace-nowrap">
                 <StatusBadge :status="ship.status" size="sm" />
-              </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium" :class="ship.current_session_num > 0 ? 'text-[#3282B8]' : 'text-slate-400'">
-                    {{ ship.current_session_num }}
-                  </span>
-                  <span class="text-slate-300">/</span>
-                  <span class="text-slate-400">{{ ship.max_session_num }}</span>
-                </div>
               </td>
               <td class="px-6 py-4 whitespace-nowrap">
                 <TTLCountdown

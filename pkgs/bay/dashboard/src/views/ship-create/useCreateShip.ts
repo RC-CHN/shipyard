@@ -15,7 +15,6 @@ export function useCreateShip() {
 
   // 表单数据
   const ttlMinutes = ref(60) // 默认60分钟
-  const maxSessionNum = ref(1) // 默认1个会话
   const cpus = ref<number | undefined>(undefined)
   const memory = ref<string>('')
   const disk = ref<string>('')
@@ -39,9 +38,6 @@ export function useCreateShip() {
     }
     if (ttlMinutes.value > 1440 * 7) {
       errs.ttl = 'TTL 最大为 7 天'
-    }
-    if (maxSessionNum.value < 1) {
-      errs.maxSessionNum = '最大会话数必须大于 0'
     }
     if (memory.value && !/^\d+(m|g|M|G|Mi|Gi)?$/.test(memory.value)) {
       errs.memory = '内存格式无效，例如：512m, 1g'
@@ -75,7 +71,6 @@ export function useCreateShip() {
 
       const request: CreateShipRequest = {
         ttl: ttlMinutes.value * 60, // 转换为秒
-        max_session_num: createMode.value === 'custom' ? maxSessionNum.value : 1,
         // 自定义模式下强制创建新容器，确保配置生效
         force_create: createMode.value === 'custom',
       }
@@ -102,7 +97,6 @@ export function useCreateShip() {
   return {
     createMode,
     ttlMinutes,
-    maxSessionNum,
     cpus,
     memory,
     disk,

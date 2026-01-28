@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSessio
 from sqlalchemy.pool import StaticPool
 from typing import Optional, List
 from app.config import settings
-from app.models import Ship, SessionShip, ShipStatus
+from app.models import Ship, SessionShip, ShipStatus, ExecutionHistory
 from datetime import datetime, timezone
 
 
@@ -186,25 +186,21 @@ class DatabaseService:
         finally:
             await session.close()
 
-    async def find_available_ship(self, session_id: str) -> Optional[Ship]:
-        """Find an available ship that can accept a new session"""
+    async def find_ship_for_session(self, session_id: str) -> Optional[Ship]:
+        """Find a running ship that belongs to this session (1:1 binding)."""
         session = self.get_session()
         try:
-            # Find ships that have available session slots (only RUNNING ships)
-            statement = select(Ship).where(
-                Ship.status == ShipStatus.RUNNING, Ship.current_session_num < Ship.max_session_num
+            # With 1:1 binding, each session has exactly one ship
+            statement = (
+                select(Ship)
+                .join(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    SessionShip.session_id == session_id,
+                    Ship.status == ShipStatus.RUNNING,
+                )
             )
             result = await session.execute(statement)
-            ships = list(result.scalars().all())
-
-            # Check if this session already has access to any ship
-            for ship in ships:
-                existing_session = await self.get_session_ship(session_id, ship.id)
-                if existing_session:
-                    return ship
-
-            # Return the first available ship
-            return ships[0] if ships else None
+            return result.scalars().first()
         finally:
             await session.close()
 
@@ -253,44 +249,6 @@ class DatabaseService:
             result = await session.execute(statement)
             # Use scalars().first() instead of scalar_one_or_none() to handle multiple results
             return result.scalars().first()
-        finally:
-            await session.close()
-
-    async def increment_ship_session_count(self, ship_id: str) -> Optional[Ship]:
-        """Increment the current session count for a ship"""
-        session = self.get_session()
-        try:
-            statement = select(Ship).where(Ship.id == ship_id)
-            result = await session.execute(statement)
-            ship = result.scalar_one_or_none()
-
-            if ship:
-                ship.current_session_num += 1
-                ship.updated_at = datetime.now(timezone.utc)
-                session.add(ship)
-                await session.commit()
-                await session.refresh(ship)
-
-            return ship
-        finally:
-            await session.close()
-
-    async def decrement_ship_session_count(self, ship_id: str) -> Optional[Ship]:
-        """Decrement the current session count for a ship"""
-        session = self.get_session()
-        try:
-            statement = select(Ship).where(Ship.id == ship_id)
-            result = await session.execute(statement)
-            ship = result.scalar_one_or_none()
-
-            if ship and ship.current_session_num > 0:
-                ship.current_session_num -= 1
-                ship.updated_at = datetime.now(timezone.utc)
-                session.add(ship)
-                await session.commit()
-                await session.refresh(ship)
-
-            return ship
         finally:
             await session.close()
 
@@ -374,6 +332,216 @@ class DatabaseService:
                 await session.commit()
             
             return updated_count
+        finally:
+            await session.close()
+
+    async def find_warm_pool_ship(self) -> Optional[Ship]:
+        """Find an available ship from the warm pool (running ship with no session)."""
+        session = self.get_session()
+        try:
+            # Find running ships that have no session attached
+            statement = (
+                select(Ship)
+                .outerjoin(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    Ship.status == ShipStatus.RUNNING,
+                    SessionShip.id == None,  # noqa: E711
+                )
+                .order_by(Ship.created_at.asc())  # Oldest first (FIFO)
+            )
+            result = await session.execute(statement)
+            return result.scalars().first()
+        finally:
+            await session.close()
+
+    async def count_warm_pool_ships(self) -> int:
+        """Count ships in the warm pool (running ships with no session)."""
+        session = self.get_session()
+        try:
+            statement = (
+                select(Ship)
+                .outerjoin(SessionShip, Ship.id == SessionShip.ship_id)
+                .where(
+                    Ship.status == ShipStatus.RUNNING,
+                    SessionShip.id == None,  # noqa: E711
+                )
+            )
+            result = await session.execute(statement)
+            return len(list(result.scalars().all()))
+        finally:
+            await session.close()
+
+    # Execution History operations
+    async def create_execution_history(
+        self,
+        session_id: str,
+        exec_type: str,
+        success: bool,
+        code: Optional[str] = None,
+        command: Optional[str] = None,
+        execution_time_ms: Optional[int] = None,
+        description: Optional[str] = None,
+        tags: Optional[str] = None,
+    ) -> ExecutionHistory:
+        """Record an execution in history."""
+        history = ExecutionHistory(
+            session_id=session_id,
+            exec_type=exec_type,
+            code=code,
+            command=command,
+            success=success,
+            execution_time_ms=execution_time_ms,
+            description=description,
+            tags=tags,
+        )
+        session = self.get_session()
+        try:
+            session.add(history)
+            await session.commit()
+            await session.refresh(history)
+            return history
+        finally:
+            await session.close()
+
+    async def get_execution_history(
+        self,
+        session_id: str,
+        exec_type: Optional[str] = None,
+        success_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+        tags: Optional[str] = None,
+        has_notes: bool = False,
+        has_description: bool = False,
+    ) -> tuple[List[ExecutionHistory], int]:
+        """Get execution history for a session.
+
+        Args:
+            session_id: The session ID
+            exec_type: Filter by 'python' or 'shell'
+            success_only: Only return successful executions
+            limit: Maximum entries to return
+            offset: Number of entries to skip
+            tags: Filter by tags (comma-separated, matches if any tag is present)
+            has_notes: Only return entries with notes
+            has_description: Only return entries with description
+        """
+        session = self.get_session()
+        try:
+            # Build query
+            conditions = [ExecutionHistory.session_id == session_id]
+            if exec_type:
+                conditions.append(ExecutionHistory.exec_type == exec_type)
+            if success_only:
+                conditions.append(ExecutionHistory.success == True)  # noqa: E712
+            if has_notes:
+                conditions.append(ExecutionHistory.notes != None)  # noqa: E711
+                conditions.append(ExecutionHistory.notes != "")
+            if has_description:
+                conditions.append(ExecutionHistory.description != None)  # noqa: E711
+                conditions.append(ExecutionHistory.description != "")
+            if tags:
+                # Match any of the provided tags
+                tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+                if tag_list:
+                    from sqlalchemy import or_
+                    tag_conditions = [ExecutionHistory.tags.contains(tag) for tag in tag_list]
+                    conditions.append(or_(*tag_conditions))
+
+            # Count total
+            count_stmt = select(ExecutionHistory).where(*conditions)
+            count_result = await session.execute(count_stmt)
+            total = len(list(count_result.scalars().all()))
+
+            # Get entries
+            statement = (
+                select(ExecutionHistory)
+                .where(*conditions)
+                .order_by(ExecutionHistory.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            result = await session.execute(statement)
+            entries = list(result.scalars().all())
+
+            return entries, total
+        finally:
+            await session.close()
+
+    async def get_execution_by_id(
+        self,
+        session_id: str,
+        execution_id: str,
+    ) -> Optional[ExecutionHistory]:
+        """Get a specific execution record by ID."""
+        session = self.get_session()
+        try:
+            statement = select(ExecutionHistory).where(
+                ExecutionHistory.session_id == session_id,
+                ExecutionHistory.id == execution_id,
+            )
+            result = await session.execute(statement)
+            return result.scalar_one_or_none()
+        finally:
+            await session.close()
+
+    async def get_last_execution(
+        self,
+        session_id: str,
+        exec_type: Optional[str] = None,
+    ) -> Optional[ExecutionHistory]:
+        """Get the most recent execution for a session."""
+        session = self.get_session()
+        try:
+            conditions = [ExecutionHistory.session_id == session_id]
+            if exec_type:
+                conditions.append(ExecutionHistory.exec_type == exec_type)
+
+            statement = (
+                select(ExecutionHistory)
+                .where(*conditions)
+                .order_by(ExecutionHistory.created_at.desc())
+                .limit(1)
+            )
+            result = await session.execute(statement)
+            return result.scalar_one_or_none()
+        finally:
+            await session.close()
+
+    async def update_execution_history(
+        self,
+        session_id: str,
+        execution_id: str,
+        description: Optional[str] = None,
+        tags: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Optional[ExecutionHistory]:
+        """Update metadata for an execution history record.
+
+        Only updates fields that are provided (not None).
+        """
+        session = self.get_session()
+        try:
+            statement = select(ExecutionHistory).where(
+                ExecutionHistory.session_id == session_id,
+                ExecutionHistory.id == execution_id,
+            )
+            result = await session.execute(statement)
+            history = result.scalar_one_or_none()
+
+            if history:
+                if description is not None:
+                    history.description = description
+                if tags is not None:
+                    history.tags = tags
+                if notes is not None:
+                    history.notes = notes
+
+                session.add(history)
+                await session.commit()
+                await session.refresh(history)
+
+            return history
         finally:
             await session.close()
 

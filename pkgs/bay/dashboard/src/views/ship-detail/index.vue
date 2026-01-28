@@ -218,14 +218,6 @@ const {
                 <div class="font-mono text-lg text-[#0F4C75]">{{ ship.ip_address || '-' }}</div>
               </div>
               <div class="bg-blue-50/50 rounded-xl p-6 border border-blue-50">
-                <div class="text-sm font-medium text-slate-500 mb-2 uppercase tracking-wider">会话数</div>
-                <div class="text-lg text-[#0F4C75] font-medium">
-                  <span class="text-2xl">{{ ship.current_session_num }}</span>
-                  <span class="text-slate-400 mx-1">/</span>
-                  <span class="text-slate-500">{{ ship.max_session_num }}</span>
-                </div>
-              </div>
-              <div class="bg-blue-50/50 rounded-xl p-6 border border-blue-50">
                 <div class="text-sm font-medium text-slate-500 mb-2 uppercase tracking-wider">TTL 配置</div>
                 <div class="text-lg text-[#0F4C75] font-medium">{{ Math.floor(ship.ttl / 60) }} 分钟</div>
               </div>

@@ -35,8 +35,6 @@ export interface Ship {
   container_id: string | null
   ip_address: string | null
   ttl: number
-  max_session_num: number
-  current_session_num: number
   expires_at: string | null
 }
 
@@ -51,7 +49,6 @@ export interface ShipSpec {
 export interface CreateShipRequest {
   ttl: number
   spec?: ShipSpec
-  max_session_num?: number
   force_create?: boolean  // If true, skip reuse logic and always create new container
 }
 

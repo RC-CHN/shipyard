@@ -6,6 +6,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 from app.database import db_service
 from app.auth import verify_token
+from app.models import ExecutionHistoryResponse, ExecutionHistoryEntry
 
 router = APIRouter()
 
@@ -211,16 +212,143 @@ async def delete_session(session_id: str, token: str = Depends(verify_token)):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Session not found"
             )
-        
-        # Try to decrement the ship's session count (may fail if ship already deleted)
-        try:
-            await db_service.decrement_ship_session_count(session_ship.ship_id)
-        except Exception:
-            # Ship may have been deleted, ignore the error
-            pass
-        
+
         # Delete the session
         await session.delete(session_ship)
         await session.commit()
     finally:
         await session.close()
+
+
+@router.get("/sessions/{session_id}/history", response_model=ExecutionHistoryResponse)
+async def get_execution_history(
+    session_id: str,
+    exec_type: Optional[str] = None,
+    success_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+    tags: Optional[str] = None,
+    has_notes: bool = False,
+    has_description: bool = False,
+    token: str = Depends(verify_token),
+):
+    """Get execution history for a session.
+
+    This enables agents to retrieve their successful execution paths
+    for skill library construction (inspired by VOYAGER).
+
+    Args:
+        session_id: The session ID
+        exec_type: Filter by type ('python' or 'shell')
+        success_only: If True, only return successful executions
+        limit: Maximum number of entries to return
+        offset: Number of entries to skip
+        tags: Filter by tags (comma-separated, matches if any tag is present)
+        has_notes: If True, only return entries with notes
+        has_description: If True, only return entries with description
+    """
+    entries, total = await db_service.get_execution_history(
+        session_id=session_id,
+        exec_type=exec_type,
+        success_only=success_only,
+        limit=limit,
+        offset=offset,
+        tags=tags,
+        has_notes=has_notes,
+        has_description=has_description,
+    )
+
+    return ExecutionHistoryResponse(
+        entries=[
+            ExecutionHistoryEntry.model_validate(e)
+            for e in entries
+        ],
+        total=total,
+    )
+
+
+@router.get("/sessions/{session_id}/history/last", response_model=ExecutionHistoryEntry)
+async def get_last_execution(
+    session_id: str,
+    exec_type: Optional[str] = None,
+    token: str = Depends(verify_token),
+):
+    """Get the most recent execution for a session.
+
+    Args:
+        session_id: The session ID
+        exec_type: Filter by type ('python' or 'shell'), optional
+    """
+    entry = await db_service.get_last_execution(session_id, exec_type)
+
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No execution history found"
+        )
+
+    return ExecutionHistoryEntry.model_validate(entry)
+
+
+@router.get("/sessions/{session_id}/history/{execution_id}", response_model=ExecutionHistoryEntry)
+async def get_execution_by_id(
+    session_id: str,
+    execution_id: str,
+    token: str = Depends(verify_token),
+):
+    """Get a specific execution record by ID.
+
+    Args:
+        session_id: The session ID
+        execution_id: The execution history ID
+    """
+    entry = await db_service.get_execution_by_id(session_id, execution_id)
+
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Execution not found"
+        )
+
+    return ExecutionHistoryEntry.model_validate(entry)
+
+
+class AnnotateExecutionRequest(BaseModel):
+    """Request model for annotating an execution."""
+    description: Optional[str] = None
+    tags: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.patch("/sessions/{session_id}/history/{execution_id}", response_model=ExecutionHistoryEntry)
+async def annotate_execution(
+    session_id: str,
+    execution_id: str,
+    request: AnnotateExecutionRequest,
+    token: str = Depends(verify_token),
+):
+    """Annotate an execution record with metadata.
+
+    Use this to add descriptions, tags, or notes to an execution after
+    it has been recorded. Useful for skill library construction.
+
+    Args:
+        session_id: The session ID
+        execution_id: The execution history ID
+        request: Annotation data (description, tags, notes)
+    """
+    entry = await db_service.update_execution_history(
+        session_id=session_id,
+        execution_id=execution_id,
+        description=request.description,
+        tags=request.tags,
+        notes=request.notes,
+    )
+
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Execution not found"
+        )
+
+    return ExecutionHistoryEntry.model_validate(entry)

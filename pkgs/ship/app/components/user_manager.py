@@ -14,6 +14,7 @@ import shutil
 import shlex
 import json
 import uuid
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
@@ -50,6 +51,8 @@ class ProcessResult:
     pid: Optional[int] = None
     process_id: Optional[str] = None
     error: Optional[str] = None
+    command: Optional[str] = None  # Original command that was executed
+    execution_time_ms: Optional[int] = None  # Execution time in milliseconds
 
 
 class BackgroundProcessEntry:
@@ -561,6 +564,7 @@ async def run_as_user(
     background: bool = False,
 ) -> ProcessResult:
     """以指定用户身份运行命令"""
+    start_time = time.monotonic()
     try:
         username = await get_or_create_session_user(session_id)
         user_info = await UserManager.get_user_info(username)
@@ -670,6 +674,7 @@ async def run_as_user(
                 process_id,
                 command,
             )
+            execution_time_ms = int((time.monotonic() - start_time) * 1000)
             return ProcessResult(
                 success=True,
                 return_code=0,
@@ -677,12 +682,15 @@ async def run_as_user(
                 stderr="",
                 pid=process.pid,
                 process_id=process_id,
+                command=command,
+                execution_time_ms=execution_time_ms,
             )
         else:
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
                 )
+                execution_time_ms = int((time.monotonic() - start_time) * 1000)
                 return ProcessResult(
                     success=process.returncode == 0,
                     return_code=process.returncode,
@@ -690,10 +698,13 @@ async def run_as_user(
                     stderr=stderr.decode().strip(),
                     pid=process.pid,
                     process_id=None,
+                    command=command,
+                    execution_time_ms=execution_time_ms,
                 )
             except asyncio.TimeoutError:
                 process.kill()
                 await process.communicate()
+                execution_time_ms = int((time.monotonic() - start_time) * 1000)
                 return ProcessResult(
                     success=False,
                     return_code=-1,
@@ -702,6 +713,8 @@ async def run_as_user(
                     pid=process.pid,
                     process_id=None,
                     error="Command timed out",
+                    command=command,
+                    execution_time_ms=execution_time_ms,
                 )
 
     except Exception as e:
@@ -712,6 +725,7 @@ async def run_as_user(
             cwd,
             list(env.keys()) if env else [],
         )
+        execution_time_ms = int((time.monotonic() - start_time) * 1000)
         return ProcessResult(
             success=False,
             return_code=-1,
@@ -720,4 +734,6 @@ async def run_as_user(
             error=str(e),
             pid=None,
             process_id=None,
+            command=command,
+            execution_time_ms=execution_time_ms,
         )

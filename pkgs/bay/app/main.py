@@ -6,6 +6,7 @@ from app.config import settings
 from app.database import db_service
 from app.drivers import initialize_driver, close_driver
 from app.services.status import status_checker
+from app.services.ship import ship_service
 from app.routes import health, ships, stat, sessions
 
 # Configure logging
@@ -35,6 +36,11 @@ async def lifespan(app: FastAPI):
         await status_checker.start()
         logger.info("Status checker started")
 
+        # Start warm pool
+        await ship_service.start_warm_pool()
+        if settings.warm_pool_enabled:
+            logger.info(f"Warm pool started (min_size={settings.warm_pool_min_size})")
+
         logger.info("Bay API service started successfully")
 
     except Exception as e:
@@ -45,6 +51,13 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down Bay API service...")
+
+    # Stop warm pool
+    try:
+        await ship_service.stop_warm_pool()
+        logger.info("Warm pool stopped")
+    except Exception as e:
+        logger.error(f"Error stopping warm pool: {e}")
 
     # Stop status checker
     try:
